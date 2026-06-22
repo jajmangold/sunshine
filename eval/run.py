@@ -15,6 +15,7 @@ LOCAL = os.path.dirname(os.path.abspath(__file__)) + "/tasks"     # synthetic ta
 TMPY = "/home/josh/.local/share/uv/tools/trailmark/bin/python"    # the env with trailmark
 REPOMAP = os.path.dirname(os.path.abspath(__file__)) + "/../organs/context/repomap.py"
 SENT = "SUNSTEPDONE"
+NS = os.getenv("SUN_LESSON_NS", "eval-lessons")   # lesson namespace (isolate experiments)
 
 TOOLS = [
     {"type": "function", "function": {"name": "bash", "description": "Run a shell command in the task "
@@ -48,7 +49,7 @@ class Task:
             sh("docker", "rm", "-f", self.ct)
             sh("docker", "run", "-d", "--name", self.ct, "--entrypoint", "sleep", "python:3.12-slim", "infinity")
             sh("docker", "exec", self.ct, "bash", "-lc",
-               "apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq git >/dev/null 2>&1; mkdir -p /app")
+               "apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq git make >/dev/null 2>&1; mkdir -p /app")
             if os.path.isdir(f"{self.dir}/repo"):
                 sh("docker", "cp", f"{self.dir}/repo/.", f"{self.ct}:/app")
             sh("docker", "cp", f"{self.dir}/tests", f"{self.ct}:/app/tests")   # agent can run/see the failing tests
@@ -142,7 +143,7 @@ def run(name, steps=20, ablation=None, label=""):
     if ablation.get("Recall") == "on":                               # gated memory recall (the rung)
         try:
             req = urllib.request.Request("http://127.0.0.1:8090/recall",
-                data=json.dumps({"ns": ["eval-lessons", "recipes", "agent-traces"], "q": instr,
+                data=json.dumps({"ns": [NS, "recipes", "agent-traces"], "q": instr,
                                  "k": 2, "min_sim": 0.6}).encode(), headers={"Content-Type": "application/json"})
             hits = json.loads(urllib.request.urlopen(req, timeout=15).read()).get("hits", [])
             if hits:
@@ -152,7 +153,7 @@ def run(name, steps=20, ablation=None, label=""):
         except Exception as e:
             log(f"  [recall error: {str(e)[:60]}]")
     messages = [{"role": "system", "content": sysmsg}, {"role": "user", "content": instr}]
-    tok = malformed = 0; t0 = time.time(); done = False
+    tok = malformed = 0; t0 = time.time(); done = False; actions = []
     for step in range(1, steps + 1):
         try:
             resp = backend(messages, ablation)
@@ -174,6 +175,8 @@ def run(name, steps=20, ablation=None, label=""):
                 args = {}; malformed += 1
             if fn == "bash":
                 out = t.bash(args.get("command", ""))
+                if "[exit 0]" in out:
+                    actions.append(args.get("command", ""))   # track winning commands for auto-distill
             elif fn == "read_file":
                 out = t.bash("cat " + args.get("path", ""))
             elif fn == "write_file":
@@ -188,6 +191,16 @@ def run(name, steps=20, ablation=None, label=""):
             break
     solved, p, f, tail = t.test()
     dt = time.time() - t0
+    if solved and ablation.get("Distill") == "on" and actions:    # VERIFIED-ONLY: learn from our own success
+        lesson = ("Problem: " + instr.strip()[:160] + "  Approach: the commands that solved it were: "
+                  + " ; ".join(actions[-5:]))
+        try:
+            urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:8090/write",
+                data=json.dumps({"ns": NS, "key": instr.strip()[:80], "value": lesson,
+                                 "distill": True}).encode(), headers={"Content-Type": "application/json"}), timeout=40)
+            log(f"  [auto-distilled a lesson from verified success ({len(actions)} winning cmds)]")
+        except Exception as e:
+            log(f"  [distill error: {str(e)[:50]}]")
     log(f"\nRESULT {name} [{label or 'baseline'}]: {'PASS' if solved else 'fail'} ({p}p/{f}f) | "
         f"steps={step} tokens={tok} malformed={malformed} {dt:.0f}s | {tail}")
     return {"task": name, "label": label or "baseline", "solved": solved, "passed": p, "failed": f,
@@ -201,6 +214,7 @@ if __name__ == "__main__":
         if a == "--steps": steps = int(args[i + 1])
         if a == "--repomap": abl["RepoMap"] = args[i + 1]
         if a == "--recall": abl["Recall"] = args[i + 1]
+        if a == "--distill": abl["Distill"] = args[i + 1]
         if a == "--loopdetect": abl["LoopDetect"] = args[i + 1]
         if a == "--label": label = args[i + 1]
     res = run(name, steps, abl, label)
