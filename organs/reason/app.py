@@ -61,12 +61,24 @@ def _hijack_msg(lessons):
             "values correct for THIS task, not their specific paths/hosts/URLs.")
 
 
-def _call(messages, thinking, max_tokens):
+def _call(messages, thinking, max_tokens, prefill=None):
+    """prefill (the <think> hijack) continues the assistant's OWN thought — the model owns the recalled
+    reasoning (steers better than an advisory message; the Nanbeige finding, restored for Qwen)."""
     body = {"model": MAIN_MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": 0.6,
             "top_p": 0.95, "chat_template_kwargs": {"enable_thinking": thinking}}
+    if prefill is not None:
+        body["messages"] = messages + [{"role": "assistant", "content": prefill}]
+        body["continue_final_message"] = True; body["add_generation_prompt"] = False
     r = urllib.request.Request(MAIN_URL, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     d = json.loads(urllib.request.urlopen(r, timeout=200).read())
-    return d["choices"][0]["message"].get("content") or "", d["usage"]["completion_tokens"]
+    out = d["choices"][0]["message"].get("content") or ""
+    return ((prefill + out) if prefill else out), d["usage"]["completion_tokens"]
+
+
+def _think_prefill(lessons):
+    body = "  ".join(f"I recall a relevant case — {l.strip()}" for l in lessons[:3])
+    return ("<think>\n" + body + "  Those were OTHER tasks; I'll reuse the general APPROACH but use "
+            "values correct for THIS task, not their specific paths/hosts/URLs.\n")
 
 
 class ReasonReq(BaseModel):
@@ -89,9 +101,13 @@ def reason(req: ReasonReq):
     sysp = ("You are a capable problem-solver. Reason about the task" +
             (", then end with one line `ACTION: <the single exact shell command to run next>`."
              if req.want == "command" else " and give a clear, correct answer."))
-    system = sysp + ("\n\n" + _hijack_msg(lessons) if lessons else "")   # ONE system msg (Qwen requires it first/only)
-    msgs = [{"role": "system", "content": system}, {"role": "user", "content": req.problem}]
-    text, tok = _call(msgs, thinking, mx)
+    msgs = [{"role": "system", "content": sysp}, {"role": "user", "content": req.problem}]
+    if lessons:
+        # HIJACK = inject the recalled lessons as an UNCLOSED <think> prefill (model owns the reasoning,
+        # steers better than a message). enable_thinking on so the prefill continues a real thought.
+        text, tok = _call(msgs, True, max(mx, 1400), prefill=_think_prefill(lessons))
+    else:
+        text, tok = _call(msgs, thinking, mx)
     answer = text.split("</think>")[-1].strip() if "</think>" in text else text.strip()
     conclusion = _extract_command(answer) if req.want == "command" else answer
     return {"conclusion": conclusion, "reasoning": (text if thinking else ""),
