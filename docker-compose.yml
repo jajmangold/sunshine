@@ -36,3 +36,15 @@ services:
       MAIN_MODEL: "qwen3.5-4b"
       MEMORY_URL: "http://127.0.0.1:8090"
     command: ["uvicorn","app:app","--host","0.0.0.0","--port","8092"]
+
+  verify:
+    build: ./organs/verify
+    image: sunshine-verify:0.1
+    container_name: sun-verify
+    restart: unless-stopped
+    network_mode: host                  # reach wasm-sandbox (172.30.0.2) + main :8072
+    environment:
+      SANDBOX_URL: "http://172.30.0.2:8000/run"
+      MAIN_URL: "http://127.0.0.1:8072/v1/chat/completions"
+      MAIN_MODEL: "qwen3.5-4b"
+    command: ["uvicorn","app:app","--host","0.0.0.0","--port","8093"]
