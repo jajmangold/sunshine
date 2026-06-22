@@ -48,3 +48,16 @@ services:
       MAIN_URL: "http://127.0.0.1:8072/v1/chat/completions"
       MAIN_MODEL: "qwen3.5-4b"
     command: ["uvicorn","app:app","--host","0.0.0.0","--port","8093"]
+
+  kernel:
+    build: ./organs/kernel
+    image: sunshine-kernel:0.1
+    container_name: sun-kernel
+    restart: unless-stopped
+    network_mode: host                  # compose the organs on 127.0.0.1
+    environment:
+      MEMORY_URL: "http://127.0.0.1:8090"
+      FAST_URL: "http://127.0.0.1:8091"
+      REASON_URL: "http://127.0.0.1:8092"
+      VERIFY_URL: "http://127.0.0.1:8093"
+    command: ["uvicorn","app:app","--host","0.0.0.0","--port","8094"]
