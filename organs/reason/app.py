@@ -21,7 +21,10 @@ MEMORY_URL = os.getenv("MEMORY_URL", "")            # optional: reason can recal
 app = FastAPI(title="sunshine-reason")
 
 EFFORT = {"terse": (False, 256), "normal": (False, 1400), "deep": (True, 6000)}
-_SKIP = ("-", "#", "*", "let", "i ", "the ", "now", "next", "first", "then", "so ", "we ", "wait", "but", "another", "however")
+# prose verbs a real command never starts with (the command is mkdir/openssl/chmod/... not "Verify ...")
+_SKIP = ("-", "#", "*", "let", "i ", "the ", "now", "next", "first", "then", "so ", "we ", "wait", "but",
+         "another", "however", "verify", "create", "generate", "ensure", "save", "action", "use ", "run ",
+         "execute", "check ", "this ", "here", "note", "make sure", "step ", "finally", "to ")
 
 
 def _looks_like_cmd(s):
@@ -30,19 +33,28 @@ def _looks_like_cmd(s):
     return not s.lower().startswith(_SKIP)
 
 
+def _clean(c):
+    c = c.strip().strip("`").strip()
+    return re.sub(r"^(action|run|execute|command)\s*:?\s*", "", c, flags=re.I).strip("`").strip()
+
+
 def _extract_command(text):
-    if "ACTION:" in text:
-        c = text.rsplit("ACTION:", 1)[-1].strip().splitlines()[0].strip()
-        if _looks_like_cmd(c):
+    # the model often wraps the real command in backticks: "...using `cmd`" / "Action: `cmd`"
+    for b in reversed(re.findall(r"`([^`\n]+)`", text)):
+        if _looks_like_cmd(_clean(b)):
+            return _clean(b)
+    if "ACTION:" in text.upper():
+        c = _clean(text[text.upper().rfind("ACTION:") + 7:].strip().splitlines()[0])
+        if c.upper().startswith("DONE") or _looks_like_cmd(c):
             return c
     m = re.search(r"```(?:bash|sh)?\s*\n?(.+?)```", text, re.S)
     if m and _looks_like_cmd(m.group(1).strip().splitlines()[0].strip()):
         return m.group(1).strip().splitlines()[0].strip()
     for ln in reversed(text.strip().splitlines()):
-        s = ln.strip().lstrip("$ ").strip("`").strip()
+        s = _clean(ln.lstrip("$ "))
         if _looks_like_cmd(s):
             return s
-    return text.strip().splitlines()[-1].strip() if text.strip() else ""
+    return ""
 
 
 def _recall(ns, q, k):
@@ -99,7 +111,9 @@ def reason(req: ReasonReq):
     thinking, mx = EFFORT.get(req.effort, EFFORT["normal"])
     lessons = req.lessons or (_recall(req.recall_ns, req.problem, req.recall_k) if (req.recall_ns and MEMORY_URL) else [])
     sysp = ("You are a capable problem-solver. Reason about the task" +
-            (", then end with one line `ACTION: <the single exact shell command to run next>`."
+            (". Look at the terminal session so far: if the task's requirements are already satisfied, "
+             "reply with exactly `ACTION: DONE`. Otherwise end with one line `ACTION: <the single exact "
+             "shell command to run next>` — a bare shell command, no prose, no backticks."
              if req.want == "command" else " and give a clear, correct answer."))
     msgs = [{"role": "system", "content": sysp}, {"role": "user", "content": req.problem}]
     if lessons:

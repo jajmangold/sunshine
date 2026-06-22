@@ -36,11 +36,13 @@ def handle(body):
     msgs = body.get("messages", [])
     users = [m["content"] for m in msgs if m.get("role") == "user" and isinstance(m.get("content"), str)]
     task = users[0] if users else ""
-    obs = users[-1] if len(users) > 1 else ""
-    # task instruction lives before "Current terminal state:"; obs = latest "New Terminal Output"
+    # task instruction lives before "Current terminal state:" — keep it FULL (truncating drops requirements)
     instr = task.split("Current terminal state:")[0]
-    instr = (instr.split("Instruction:")[-1] if "Instruction:" in instr else instr).strip()[-400:]
-    obs_tail = obs.replace("New Terminal Output:", "").strip()[-400:]
+    instr = (instr.split("Instruction:")[-1] if "Instruction:" in instr else instr).strip()[:3000]
+    # context = the session HISTORY (agent needs memory of what it did, else it loops). Terminus sends
+    # the accumulated terminal pane in later user turns; pass the most recent as the running transcript.
+    obs = users[-1] if len(users) > 1 else ""
+    obs_tail = obs.replace("New Terminal Output:", "").strip()[-1500:] or "fresh session"
     try:
         r = _post(KERNEL + "/solve", {"task": instr, "context": obs_tail, "skill": "terminus", "effort": EFFORT})
         cmd = (r.get("intent") or "").strip()
