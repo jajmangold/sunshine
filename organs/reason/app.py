@@ -34,7 +34,7 @@ def _looks_like_cmd(s):
 
 
 def _clean(c):
-    c = c.strip().strip("`").strip()
+    c = re.sub(r"</?[a-z_]+>", "", c).strip().strip("`").strip()        # strip stray <command> XML tags
     return re.sub(r"^(action|run|execute|command)\s*:?\s*", "", c, flags=re.I).strip("`").strip()
 
 
@@ -87,13 +87,15 @@ def _call(messages, thinking, max_tokens, prefill=None):
     r = urllib.request.Request(MAIN_URL, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     d = json.loads(urllib.request.urlopen(r, timeout=200).read())
     out = d["choices"][0]["message"].get("content") or ""
-    return ((prefill + out) if prefill else out), d["usage"]["completion_tokens"]
+    return out, d["usage"]["completion_tokens"]      # the model's OUTPUT only — prefill never leaks into extraction
 
 
 def _think_prefill(lessons):
+    """Lessons as the assistant's own UNCLOSED thought (Qwen strips closed </think> from assistant msgs, so
+    we can't pre-close). A conclusion nudge + a capped budget keep it from rambling."""
     body = "  ".join(f"I recall a relevant case — {l.strip()}" for l in lessons[:3])
-    return ("<think>\n" + body + "  Those were OTHER tasks; I'll reuse the general APPROACH but use "
-            "values correct for THIS task, not their specific paths/hosts/URLs.\n")
+    return ("<think>\n" + body + "  Those were OTHER tasks; reuse the general APPROACH with values correct "
+            "for THIS task. Enough recalling — I'll close my thinking and give the single command now.\n")
 
 
 class ReasonReq(BaseModel):
@@ -122,9 +124,10 @@ def reason(req: ReasonReq):
              if req.want == "command" else " and give a clear, correct answer."))
     msgs = [{"role": "system", "content": sysp}, {"role": "user", "content": req.problem}]
     if lessons:
-        # HIJACK = inject the recalled lessons as an UNCLOSED <think> prefill (model owns the reasoning,
-        # steers better than a message). enable_thinking on so the prefill continues a real thought.
-        text, tok = _call(msgs, True, max(mx, 1400), prefill=_think_prefill(lessons))
+        # HIJACK = lessons as an open <think> prefill (model owns the reasoning). Cap the budget by effort
+        # so a borderline match can't ramble 1000+ tok; nudge it to conclude. Extract from OUTPUT only.
+        cap = 500 if req.want == "command" else max(mx, 1400)
+        text, tok = _call(msgs, True, cap, prefill=_think_prefill(lessons))
     else:
         text, tok = _call(msgs, thinking, mx)
     answer = text.split("</think>")[-1].strip() if "</think>" in text else text.strip()
