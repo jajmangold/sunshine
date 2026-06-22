@@ -18,6 +18,7 @@ FAST = os.getenv("FAST_URL", "http://127.0.0.1:8091")
 REASON = os.getenv("REASON_URL", "http://127.0.0.1:8092")
 VERIFY = os.getenv("VERIFY_URL", "http://127.0.0.1:8093")
 app = FastAPI(title="sunshine-kernel")
+HIJACK_MIN_SIM = float(os.getenv("HIJACK_MIN_SIM", "0.6"))   # below this: orphan (reason un-hijacked, not misled)
 
 # the 3 knobs per skill: corpus (RECALL namespaces) · act-format · verifier
 SKILLS = {
@@ -59,10 +60,13 @@ def solve(req: SolveReq):
     cfg = SKILLS.get(req.skill, SKILLS["agent"])
     problem = req.task + (("\n" + req.context) if req.context else "")
 
-    # RECALL — clean lessons from this skill's corpus (Law 1: distilled at write time)
+    # RECALL — clean lessons from this skill's corpus (Law 1). GATE on similarity: a weak/tangential
+    # match MISLEADS more than it helps (out-of-corpus tasks pull noise). Clean summaries separate the
+    # scores enough that a gate works — better to reason un-hijacked than steered by junk.
     lessons = []
     try:
-        hits = _post(MEMORY, "/recall", {"ns": cfg["corpus"], "q": problem, "k": 2}, t=20).get("hits", [])
+        hits = _post(MEMORY, "/recall", {"ns": cfg["corpus"], "q": problem, "k": 2,
+                                         "min_sim": HIJACK_MIN_SIM}, t=20).get("hits", [])
         lessons = [h["value"] for h in hits]
     except Exception:
         pass
