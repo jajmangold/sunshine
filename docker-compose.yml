@@ -72,3 +72,14 @@ services:
       KERNEL_URL: "http://127.0.0.1:8094"
       PORT: "8095"
       AGENT_EFFORT: "terse"
+
+  shaper:
+    build: ./organs/shaper
+    image: sunshine-shaper:0.1
+    container_name: sun-shaper
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      MAIN_URL: "http://127.0.0.1:8072/v1/chat/completions"
+      MAIN_MODEL: "qwen3.5-4b"
+    command: ["uvicorn","app:app","--host","0.0.0.0","--port","8096"]
