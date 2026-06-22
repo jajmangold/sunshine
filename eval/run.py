@@ -11,6 +11,9 @@ import subprocess, json, sys, os, time, base64, urllib.request
 
 BACKEND = os.getenv("BACKEND_URL", "http://127.0.0.1:8073/v1/chat/completions")
 TB = "/home/josh/.cache/terminal-bench/terminal-bench-core/0.1.1"
+LOCAL = os.path.dirname(os.path.abspath(__file__)) + "/tasks"     # synthetic tasks live here
+TMPY = "/home/josh/.local/share/uv/tools/trailmark/bin/python"    # the env with trailmark
+REPOMAP = os.path.dirname(os.path.abspath(__file__)) + "/../organs/context/repomap.py"
 SENT = "SUNSTEPDONE"
 
 TOOLS = [
@@ -36,20 +39,31 @@ def log(s): print(s, flush=True)
 
 class Task:
     def __init__(self, name):
-        self.name = name; self.ct = f"sun-eval-{name}"; self.dir = f"{TB}/{name}"
+        self.name = name; self.ct = f"sun-eval-{name}"
+        self.local = os.path.isdir(f"{LOCAL}/{name}")
+        self.dir = f"{LOCAL}/{name}" if self.local else f"{TB}/{name}"
 
     def build_run(self):
-        img = f"sun-eval-{self.name}:latest"
-        if not sh("docker", "images", "-q", img).stdout.strip():
-            env = dict(os.environ, T_BENCH_TEST_DIR="/tmp/x", T_BENCH_TASK_LOGS_PATH="/tmp/x",
-                       T_BENCH_CONTAINER_LOGS_PATH="/tmp/x", T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME=img,
-                       T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME=self.ct, T_BENCH_TASK_DOCKER_NAME_PREFIX="suneval",
-                       T_BENCH_TASK_DOCKER_FILE_PATH="Dockerfile")
-            r = sh("docker", "compose", "-p", f"suneval-{self.name}", "-f", f"{self.dir}/docker-compose.yaml", "build", env=env)
-            if r.returncode:
-                log("BUILD FAIL:\n" + r.stderr[-500:]); sys.exit(1)
-        sh("docker", "rm", "-f", self.ct)
-        sh("docker", "run", "-d", "--name", self.ct, "--entrypoint", "sleep", img, "infinity")
+        if self.local:
+            sh("docker", "rm", "-f", self.ct)
+            sh("docker", "run", "-d", "--name", self.ct, "--entrypoint", "sleep", "python:3.12-slim", "infinity")
+            sh("docker", "exec", self.ct, "bash", "-lc", "mkdir -p /app")
+            sh("docker", "cp", f"{self.dir}/repo/.", f"{self.ct}:/app")
+            sh("docker", "cp", f"{self.dir}/tests", f"{self.ct}:/app/tests")   # agent can run/see the failing tests
+            sh("docker", "exec", self.ct, "bash", "-lc",
+               "pip install -q pytest 2>/dev/null || pip install -q --break-system-packages pytest 2>/dev/null")
+        else:
+            img = f"sun-eval-{self.name}:latest"
+            if not sh("docker", "images", "-q", img).stdout.strip():
+                env = dict(os.environ, T_BENCH_TEST_DIR="/tmp/x", T_BENCH_TASK_LOGS_PATH="/tmp/x",
+                           T_BENCH_CONTAINER_LOGS_PATH="/tmp/x", T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME=img,
+                           T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME=self.ct, T_BENCH_TASK_DOCKER_NAME_PREFIX="suneval",
+                           T_BENCH_TASK_DOCKER_FILE_PATH="Dockerfile")
+                r = sh("docker", "compose", "-p", f"suneval-{self.name}", "-f", f"{self.dir}/docker-compose.yaml", "build", env=env)
+                if r.returncode:
+                    log("BUILD FAIL:\n" + r.stderr[-500:]); sys.exit(1)
+            sh("docker", "rm", "-f", self.ct)
+            sh("docker", "run", "-d", "--name", self.ct, "--entrypoint", "sleep", img, "infinity")
         self.p = subprocess.Popen(["docker", "exec", "-i", self.ct, "bash"], stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
 
@@ -74,14 +88,21 @@ class Task:
         return self.bash(f"echo {b64} | base64 -d > {path} && echo WROTE {path}")
 
     def instruction(self):
+        if self.local:
+            return open(f"{self.dir}/instruction.txt").read()
         import yaml
         return yaml.safe_load(open(f"{self.dir}/task.yaml"))["instruction"]
 
     def test(self):
-        sh("docker", "cp", f"{self.dir}/tests", f"{self.ct}:/tests")
-        py = "python3" if "python3" in sh("docker", "exec", self.ct, "bash", "-lc", "command -v python3||true").stdout else "python"
-        sh("docker", "exec", self.ct, "bash", "-lc", f"{py} -m pip install -q --break-system-packages pytest 2>/dev/null||true")
-        r = sh("docker", "exec", self.ct, "bash", "-lc", f"cd /app && {py} -m pytest /tests/test_outputs.py -q 2>&1 | tail -3")
+        if self.local:                                               # run PRISTINE tests from a clean path
+            sh("docker", "exec", self.ct, "bash", "-lc", "rm -rf /eval_tests")
+            sh("docker", "cp", f"{self.dir}/tests", f"{self.ct}:/eval_tests")
+            r = sh("docker", "exec", self.ct, "bash", "-lc", "cd /app && python -m pytest /eval_tests/ -q 2>&1 | tail -3")
+        else:
+            sh("docker", "cp", f"{self.dir}/tests", f"{self.ct}:/tests")
+            py = "python3" if "python3" in sh("docker", "exec", self.ct, "bash", "-lc", "command -v python3||true").stdout else "python"
+            sh("docker", "exec", self.ct, "bash", "-lc", f"{py} -m pip install -q --break-system-packages pytest 2>/dev/null||true")
+            r = sh("docker", "exec", self.ct, "bash", "-lc", f"cd /app && {py} -m pytest /tests/test_outputs.py -q 2>&1 | tail -3")
         out = r.stdout
         passed = "failed" not in out and ("passed" in out)
         import re
@@ -104,7 +125,16 @@ def run(name, steps=20, ablation=None, label=""):
     t = Task(name); t.build_run()
     instr = t.instruction()
     log(f"\n{'='*64}\nTASK {name}  [{label or 'baseline'}]  ablation={ablation}\n{'='*64}")
-    messages = [{"role": "system", "content": SYS}, {"role": "user", "content": instr}]
+    sysmsg = SYS
+    if ablation.get("RepoMap") == "on":                              # eval-side injection (measure the lift)
+        repo = f"{t.dir}/repo" if t.local else None
+        if repo and os.path.isdir(repo):
+            m = sh(TMPY, REPOMAP, repo, "--budget", "400").stdout.strip()
+            if m:
+                sysmsg = SYS + "\n\n[Repository map — structural overview of the codebase; use it to navigate " \
+                    "to the relevant file/function before reading/editing]\n" + m
+                log(f"  [repo-map injected: ~{len(m)//4} tok]")
+    messages = [{"role": "system", "content": sysmsg}, {"role": "user", "content": instr}]
     tok = malformed = 0; t0 = time.time(); done = False
     for step in range(1, steps + 1):
         try:

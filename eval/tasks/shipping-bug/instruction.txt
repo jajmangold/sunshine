@@ -1,0 +1,2 @@
+The test suite in /app fails. Run `python -m pytest tests/ -q` to see the failure, then find and fix the
+bug in the `shipping` package so all tests pass. Do not change the tests.
