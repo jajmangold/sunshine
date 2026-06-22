@@ -13,3 +13,14 @@ services:
     environment:
       EMBED_MODEL: "sentence-transformers/all-MiniLM-L6-v2"
       WORKER_URL: "http://127.0.0.1:8071/v1/chat/completions"        # validated Qwen3.5-0.8b worker (distill-on-write)
+
+  fast:
+    build: ./organs/fast
+    image: sunshine-fast:0.1
+    container_name: sun-fast
+    restart: unless-stopped
+    network_mode: host                  # reach the worker on 127.0.0.1:8071
+    environment:
+      WORKER_URL: "http://127.0.0.1:8071/v1/chat/completions"
+      WORKER_MODEL: "qwen3.5-0.8b"
+    command: ["uvicorn","app:app","--host","0.0.0.0","--port","8091"]
