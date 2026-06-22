@@ -47,11 +47,16 @@ class Task:
         if self.local:
             sh("docker", "rm", "-f", self.ct)
             sh("docker", "run", "-d", "--name", self.ct, "--entrypoint", "sleep", "python:3.12-slim", "infinity")
-            sh("docker", "exec", self.ct, "bash", "-lc", "mkdir -p /app")
-            sh("docker", "cp", f"{self.dir}/repo/.", f"{self.ct}:/app")
+            sh("docker", "exec", self.ct, "bash", "-lc",
+               "apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq git >/dev/null 2>&1; mkdir -p /app")
+            if os.path.isdir(f"{self.dir}/repo"):
+                sh("docker", "cp", f"{self.dir}/repo/.", f"{self.ct}:/app")
             sh("docker", "cp", f"{self.dir}/tests", f"{self.ct}:/app/tests")   # agent can run/see the failing tests
             sh("docker", "exec", self.ct, "bash", "-lc",
                "pip install -q pytest 2>/dev/null || pip install -q --break-system-packages pytest 2>/dev/null")
+            if os.path.isfile(f"{self.dir}/setup.sh"):                 # build fixtures (e.g. git history)
+                sh("docker", "cp", f"{self.dir}/setup.sh", f"{self.ct}:/tmp/setup.sh")
+                sh("docker", "exec", self.ct, "bash", "-lc", "bash /tmp/setup.sh")
         else:
             img = f"sun-eval-{self.name}:latest"
             if not sh("docker", "images", "-q", img).stdout.strip():
@@ -134,6 +139,18 @@ def run(name, steps=20, ablation=None, label=""):
                 sysmsg = SYS + "\n\n[Repository map — structural overview of the codebase; use it to navigate " \
                     "to the relevant file/function before reading/editing]\n" + m
                 log(f"  [repo-map injected: ~{len(m)//4} tok]")
+    if ablation.get("Recall") == "on":                               # gated memory recall (the rung)
+        try:
+            req = urllib.request.Request("http://127.0.0.1:8090/recall",
+                data=json.dumps({"ns": ["eval-lessons", "recipes", "agent-traces"], "q": instr,
+                                 "k": 2, "min_sim": 0.6}).encode(), headers={"Content-Type": "application/json"})
+            hits = json.loads(urllib.request.urlopen(req, timeout=15).read()).get("hits", [])
+            if hits:
+                lessons = "\n".join("- " + h["value"] for h in hits)
+                sysmsg += "\n\n[Relevant experience from past tasks — apply the approach if useful]\n" + lessons
+                log(f"  [recall injected: {len(hits)} lesson(s), top cos {hits[0]['score']}]")
+        except Exception as e:
+            log(f"  [recall error: {str(e)[:60]}]")
     messages = [{"role": "system", "content": sysmsg}, {"role": "user", "content": instr}]
     tok = malformed = 0; t0 = time.time(); done = False
     for step in range(1, steps + 1):
@@ -183,6 +200,7 @@ if __name__ == "__main__":
     for i, a in enumerate(args):
         if a == "--steps": steps = int(args[i + 1])
         if a == "--repomap": abl["RepoMap"] = args[i + 1]
+        if a == "--recall": abl["Recall"] = args[i + 1]
         if a == "--loopdetect": abl["LoopDetect"] = args[i + 1]
         if a == "--label": label = args[i + 1]
     res = run(name, steps, abl, label)

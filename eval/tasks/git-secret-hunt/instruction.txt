@@ -1,0 +1,3 @@
+An API token was accidentally committed to this git repository's history at some point and later removed,
+so it no longer appears in any current file. Find the exact token value (it looks like ghp_...) and write
+ONLY that token value to /app/found.txt.

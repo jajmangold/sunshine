@@ -1,0 +1,4 @@
+This application is gated by a license key. Write the correct license key (a plain string, no quotes or
+newline) to the file /app/license.conf. The key is validated by its SHA-256 hash, which must equal:
+cf529f673953af902257a52f0fa438e45041771e283678217b3fbabd855edd0c
+The key cannot be derived from the hash — you must know it.

@@ -9,6 +9,7 @@ no augmentation). Prefix caching enabled on sun-main (GDN-compatible ✓) — re
 | 0 single-call | openssl | ✗ | 2/6 | 14 | 361 | one-inference/step; SAME score → no quality regression, keep it |
 | **1 +loop-detect** | openssl | ✗ | **5/6** | 9 | **24** | **PROVEN RUNG: 2/6→5/6 AND 361s→24s** (escapes the loop, regenerates cert, builds pem+verification). only the python-script file remains |
 | **2 +repo-map** | shipping-bug (code-nav) | — | **0/3→2/3** | 12→9 | — | **PROVEN RUNG (cumulative, loop-detect on both): ~106-tok map → solve-rate 0/3→2/3, median steps 12→9.** Symptom 4 hops from cause; map gives the call-structure the 4B needs to trace pricing→discount→rules. Right tool, right task (≈no lift expected on from-scratch tasks like openssl) |
+| **3 +recall** | license-gate (knowledge) | — | **0/3→3/3** | 2 | — | **PROVEN RUNG: gated recall (cos 0.769) injects a lesson with an un-derivable key. Task is sha256-preimage-resistant → bare model 0/3 (hard floor), +recall 3/3 with FEWER tokens (61 vs 151). The memory→retrieve→inject→use loop, end-to-end. This is the self-improvement moat (accumulated lessons unlock capability).** |
 
 ## Rungs to add (each measured here)
 1. +loop-detection / verify-on-empty — the bare backend loops; the cheapest rung.
