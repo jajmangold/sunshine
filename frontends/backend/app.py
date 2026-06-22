@@ -106,43 +106,82 @@ def _name_of(tool):
     return tool.get("function", tool).get("name", "")
 
 
-def decide(msgs, tools):
-    names = [_name_of(t) for t in tools]
-    alt = " | ".join('"\\"' + n + '\\""' for n in names + ["respond"])
-    grammar = ('root ::= "{" ws "\\"choice\\":" ws (' + alt + ') ws "}"\nws ::= [ \\t\\n]?')
-    nudge = {"role": "user", "content": 'Output your next action as {"choice":"<' + "|".join(names + ["respond"]) + '>"}.'}
-    txt, u = _call(msgs + [nudge], grammar=grammar, max_tokens=20, temp=0.0)
-    try:
-        return json.loads(txt).get("choice", "respond"), u
-    except Exception:
-        return "respond", u
+def _action_schema(tools):
+    """oneOf: emit a tool-with-its-exact-args, or a respond — ONE constrained call (vs two-phase)."""
+    branches = []
+    for t in tools:
+        branches.append({"type": "object", "additionalProperties": False, "required": ["tool", "args"],
+                         "properties": {"tool": {"const": _name_of(t)}, "args": _schema_of(t)}})
+    branches.append({"type": "object", "additionalProperties": False, "required": ["respond"],
+                     "properties": {"respond": {"type": "string"}}})
+    return {"oneOf": branches}
 
 
-def gen_args(msgs, tool):
-    nudge = {"role": "user", "content": f"Call the tool `{_name_of(tool)}`. Produce ONLY its JSON arguments."}
-    txt, u = _call(msgs + [nudge], schema=_schema_of(tool), max_tokens=1200)
+def _sig(name, args):
     try:
-        return json.loads(txt), u
+        return name + json.dumps(args, sort_keys=True)
     except Exception:
-        return {}, u
+        return name + str(args)
 
 
 def gen_text(msgs, thinking=True):
     return _call(msgs, max_tokens=1500, thinking=thinking)
 
 
-def turn(msgs, tools):
-    """Shared core -> ('text', content) | ('tool', name, args). msgs already normalized + tool-described."""
+def turn(msgs, tools, recent_sigs=(), loop_detect=False):
+    """Shared core -> (('text',content)|('tool',name,args), tokens). Single constrained call."""
     if not tools:
-        t, _ = gen_text(msgs)
-        return ("text", t)
-    choice, _ = decide(msgs, tools)
-    if choice == "respond" or choice not in [_name_of(t) for t in tools]:
-        t, _ = gen_text(msgs)
-        return ("text", t)
-    tool = next(t for t in tools if _name_of(t) == choice)
-    args, _ = gen_args(msgs, tool)
-    return ("tool", choice, args)
+        t, u = gen_text(msgs)
+        return ("text", t), u.get("completion_tokens", 0)
+    schema = _action_schema(tools)
+    names = [_name_of(t) for t in tools]
+    nudge = {"role": "user", "content": 'Take your next action: call a tool as {"tool":<name>,"args":{...}} '
+             'or answer as {"respond":"..."}.'}
+    txt, u = _call(msgs + [nudge], schema=schema, max_tokens=1500, temp=0.2)
+    tok = u.get("completion_tokens", 0)
+    try:
+        obj = json.loads(txt)
+    except Exception:
+        return ("text", txt), tok
+    if "tool" in obj and obj["tool"] in names:
+        name, args = obj["tool"], obj.get("args", {})
+        if loop_detect and _sig(name, args) in recent_sigs:           # RUNG: escape repeats
+            anti = {"role": "user", "content": f"You ALREADY ran {name} with those args and it did not help. "
+                    "Do something genuinely DIFFERENT — diagnose why, or try another approach."}
+            txt2, u2 = _call(msgs + [anti, nudge], schema=schema, max_tokens=1500, temp=0.5, thinking=False)
+            tok += u2.get("completion_tokens", 0)
+            try:
+                o2 = json.loads(txt2)
+                if "tool" in o2 and o2["tool"] in names:
+                    return ("tool", o2["tool"], o2.get("args", {})), tok
+                return ("text", o2.get("respond", "")), tok
+            except Exception:
+                pass
+        return ("tool", name, args), tok
+    return ("text", obj.get("respond", txt)), tok
+
+
+def _recent_sigs_openai(messages, k=3):
+    sigs = []
+    for m in messages:
+        if m.get("role") == "assistant":
+            for tc in (m.get("tool_calls") or []):
+                fn = tc.get("function", {})
+                try:
+                    a = json.loads(fn.get("arguments", "{}") or "{}")
+                except Exception:
+                    a = {}
+                sigs.append(_sig(fn.get("name", ""), a))
+    return sigs[-k:]
+
+
+def _recent_sigs_anthropic(messages, k=3):
+    sigs = []
+    for m in messages:
+        for b in (m.get("content") or []) if isinstance(m.get("content"), list) else []:
+            if isinstance(b, dict) and b.get("type") == "tool_use":
+                sigs.append(_sig(b.get("name", ""), b.get("input", {})))
+    return sigs[-k:]
 
 
 def _prep(messages, tools, system_top=None):
@@ -157,10 +196,10 @@ def _prep(messages, tools, system_top=None):
 
 
 # ---------------- OpenAI surface ----------------
-def _openai_resp(result, model):
+def _openai_resp(result, model, tokens=0):
     cid = "chatcmpl-" + uuid.uuid4().hex[:24]
     base = {"id": cid, "object": "chat.completion", "created": int(time.time()), "model": model,
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
+            "usage": {"prompt_tokens": 0, "completion_tokens": tokens, "total_tokens": tokens}}
     if result[0] == "tool":
         msg = {"role": "assistant", "content": None, "tool_calls": [{
             "id": "call_" + uuid.uuid4().hex[:20], "type": "function",
@@ -193,8 +232,11 @@ def _openai_sse(resp):
 async def openai_chat(req: Request):
     body = await req.json()
     tools = body.get("tools") or []
+    ld = req.headers.get("x-sun-loopdetect", "on").lower() not in ("off", "0", "false")
+    recent = _recent_sigs_openai(body.get("messages", []))
     msgs = _prep(body.get("messages", []), tools)
-    resp = _openai_resp(turn(msgs, tools), body.get("model", MODEL_ID))
+    result, tok = turn(msgs, tools, recent, ld)
+    resp = _openai_resp(result, body.get("model", MODEL_ID), tok)
     if body.get("stream"):
         return StreamingResponse(_openai_sse(resp), media_type="text/event-stream")
     return JSONResponse(resp)
@@ -206,7 +248,7 @@ def models():
 
 
 # ---------------- Anthropic surface ----------------
-def _anthropic_resp(result, model):
+def _anthropic_resp(result, model, tokens=0):
     if result[0] == "tool":
         content = [{"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:20], "name": result[1], "input": result[2]}]
         stop = "tool_use"
@@ -214,7 +256,7 @@ def _anthropic_resp(result, model):
         content = [{"type": "text", "text": result[1]}]; stop = "end_turn"
     return {"id": "msg_" + uuid.uuid4().hex[:20], "type": "message", "role": "assistant", "model": model,
             "content": content, "stop_reason": stop, "stop_sequence": None,
-            "usage": {"input_tokens": 0, "output_tokens": 0}}
+            "usage": {"input_tokens": 0, "output_tokens": tokens}}
 
 
 def _anthropic_sse(resp):
@@ -244,8 +286,11 @@ def _anthropic_sse(resp):
 async def anthropic_messages(req: Request):
     body = await req.json()
     tools = body.get("tools") or []
+    ld = req.headers.get("x-sun-loopdetect", "on").lower() not in ("off", "0", "false")
+    recent = _recent_sigs_anthropic(body.get("messages", []))
     msgs = _prep(body.get("messages", []), tools, system_top=body.get("system"))
-    resp = _anthropic_resp(turn(msgs, tools), body.get("model", MODEL_ID))
+    result, tok = turn(msgs, tools, recent, ld)
+    resp = _anthropic_resp(result, body.get("model", MODEL_ID), tok)
     if body.get("stream"):
         return StreamingResponse(_anthropic_sse(resp), media_type="text/event-stream")
     return JSONResponse(resp)

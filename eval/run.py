@@ -153,6 +153,7 @@ if __name__ == "__main__":
     for i, a in enumerate(args):
         if a == "--steps": steps = int(args[i + 1])
         if a == "--repomap": abl["RepoMap"] = args[i + 1]
+        if a == "--loopdetect": abl["LoopDetect"] = args[i + 1]
         if a == "--label": label = args[i + 1]
     res = run(name, steps, abl, label)
     print("\nSCORECARD: " + json.dumps(res))
