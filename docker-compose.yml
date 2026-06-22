@@ -1,0 +1,15 @@
+# Sunshine — staged alongside live lm-stack. Models/secrets via .env (gitignored).
+services:
+  memory:
+    build: ./organs/memory
+    image: sunshine-memory:0.1
+    container_name: sun-memory
+    restart: unless-stopped
+    ports: ["0.0.0.0:8090:8000"]
+    mem_limit: 4g
+    volumes:
+      - ./organs/memory/data:/data                                   # native (writable) namespaces
+      - /srv/nvme-data/containers/live/lm-stack/reason-engine/methods:/legacy:ro  # existing indexes (read)
+    environment:
+      EMBED_MODEL: "sentence-transformers/all-MiniLM-L6-v2"
+      WORKER_URL: "http://127.0.0.1:8071/v1/chat/completions"        # validated Qwen3.5-0.8b worker (distill-on-write)
