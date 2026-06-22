@@ -86,10 +86,18 @@ def main():
     for step in range(1, MAX + 1):
         ctx = "Terminal session so far:\n" + "\n".join(f"$ {c}\n{o}" for c, o in transcript[-6:]) \
             if transcript else "root@host:/app# (fresh session)"
+        recent = [c for c, _ in transcript[-3:]]
         t = time.time()
         r = post(KERNEL, {"task": instr[:3000], "context": ctx[-1500:], "skill": "terminus", "effort": "terse"})
         cmd = (r.get("intent") or "").strip()
-        log(f"\n── step {step}  [{time.time()-t:.1f}s · hijacked={r.get('hijacked')} · lessons={r.get('lessons')} · {r.get('tokens')}tok]")
+        esc = ""
+        if cmd and cmd in recent:                    # LOOP — escalate: deeper effort + explicit anti-repeat nudge
+            esc = " [escalated: looped]"
+            nudge = (ctx + f"\n\nYou ALREADY ran `{cmd}` and it did NOT complete the task. Do NOT repeat it or "
+                     "minor variants — diagnose why it failed and try a genuinely DIFFERENT approach.")
+            r = post(KERNEL, {"task": instr[:3000], "context": nudge[-1800:], "skill": "terminus", "effort": "deep"})
+            cmd = (r.get("intent") or "").strip()
+        log(f"\n── step {step}  [{time.time()-t:.1f}s · hijacked={r.get('hijacked')} · {r.get('tokens')}tok]{esc}")
         if cmd.upper().startswith("DONE") or not cmd:
             log("   ACTION: DONE"); break
         log(f"   $ {cmd}")

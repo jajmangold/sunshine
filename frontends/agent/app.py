@@ -32,6 +32,19 @@ def to_terminus(command, done):
         "is_task_complete": bool(done)})
 
 
+def _prior_commands(msgs):
+    """The shim's own prior Terminus JSONs (assistant turns) -> the commands already issued."""
+    out = []
+    for m in msgs:
+        if m.get("role") == "assistant" and isinstance(m.get("content"), str):
+            try:
+                for c in json.loads(m["content"]).get("commands", []):
+                    out.append(c.get("keystrokes", "").strip())
+            except Exception:
+                pass
+    return out
+
+
 def handle(body):
     msgs = body.get("messages", [])
     users = [m["content"] for m in msgs if m.get("role") == "user" and isinstance(m.get("content"), str)]
@@ -43,10 +56,17 @@ def handle(body):
     # the accumulated terminal pane in later user turns; pass the most recent as the running transcript.
     obs = users[-1] if len(users) > 1 else ""
     obs_tail = obs.replace("New Terminal Output:", "").strip()[-1500:] or "fresh session"
+    recent = [c for c in _prior_commands(msgs)[-3:]]
     try:
         r = _post(KERNEL + "/solve", {"task": instr, "context": obs_tail, "skill": "terminus", "effort": EFFORT})
         cmd = (r.get("intent") or "").strip()
         tok = r.get("tokens", 0)
+        if cmd and cmd.rstrip("\n") in [c.rstrip("\n") for c in recent]:   # LOOP -> escalate effort + anti-repeat
+            nudge = (obs_tail + f"\n\nYou ALREADY ran `{cmd}` and it did NOT complete the task. Do NOT repeat "
+                     "it or minor variants — diagnose why and try a genuinely DIFFERENT approach.")
+            r = _post(KERNEL + "/solve", {"task": instr, "context": nudge[-1800:], "skill": "terminus", "effort": "deep"})
+            cmd = (r.get("intent") or "").strip() or cmd
+            tok += r.get("tokens", 0)
     except Exception as e:
         cmd, tok = "", 0
     done = cmd.upper().startswith("DONE") or not cmd
