@@ -11,6 +11,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 KERNEL = os.getenv("KERNEL_URL", "http://127.0.0.1:8094")
 PORT = int(os.getenv("PORT", "8095"))
 EFFORT = os.getenv("AGENT_EFFORT", "terse")
+TIMEOUT = int(os.getenv("CMD_TIMEOUT_SEC", "20"))   # cap blocking waits (60s default wasted time on hangs)
+# commands that start something interactive/long-running -> don't block-wait the full timeout
+_NONBLOCK = ("./", "python -i", "vim ", "vi ", "nano ", "less ", "top", "htop", "nc ", "telnet ", "ssh ", "tail -f")
 
 
 def _post(url, obj, t=200):
@@ -21,10 +24,11 @@ def _post(url, obj, t=200):
 def to_terminus(command, done):
     """Strict Terminus CommandBatchResponse (extra=forbid): state_analysis + explanation + commands + flag."""
     ks = "" if done else (command if command.endswith("\n") else command + "\n")
+    blocking = not any(command.lstrip().startswith(p) for p in _NONBLOCK)   # don't block on interactive/long
     return json.dumps({
         "state_analysis": "Proceeding based on the current terminal state.",
         "explanation": "Task complete." if done else "Run the next command and observe its output.",
-        "commands": [] if done else [{"keystrokes": ks, "is_blocking": True, "timeout_sec": 60}],
+        "commands": [] if done else [{"keystrokes": ks, "is_blocking": blocking, "timeout_sec": TIMEOUT}],
         "is_task_complete": bool(done)})
 
 
