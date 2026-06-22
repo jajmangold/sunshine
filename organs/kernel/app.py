@@ -23,6 +23,8 @@ app = FastAPI(title="sunshine-kernel")
 SKILLS = {
     "agent": {"corpus": ["agent-traces", "recipes"], "want": "command",
               "act": {"options": ["run_bash", "finish"]}, "verifier": None},
+    "terminus": {"corpus": ["agent-traces", "recipes"], "want": "command",   # text-command harness: intent only
+                 "act": None, "verifier": None},
     "code":  {"corpus": ["agent-traces", "math-traces"], "want": "answer",
               "act": None, "verifier": "wasm-python"},
     "chat":  {"corpus": ["user-facts", "conversations"], "want": "answer",

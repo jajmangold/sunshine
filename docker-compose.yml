@@ -61,3 +61,14 @@ services:
       REASON_URL: "http://127.0.0.1:8092"
       VERIFY_URL: "http://127.0.0.1:8093"
     command: ["uvicorn","app:app","--host","0.0.0.0","--port","8094"]
+
+  agent:
+    build: ./frontends/agent
+    image: sunshine-agent:0.1
+    container_name: sun-agent
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      KERNEL_URL: "http://127.0.0.1:8094"
+      PORT: "8095"
+      AGENT_EFFORT: "terse"
