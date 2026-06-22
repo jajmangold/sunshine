@@ -39,14 +39,17 @@ def _clean(c):
 
 
 def _extract_command(text):
-    # the model often wraps the real command in backticks: "...using `cmd`" / "Action: `cmd`"
-    for b in reversed(re.findall(r"`([^`\n]+)`", text)):
-        if _looks_like_cmd(_clean(b)):
-            return _clean(b)
+    # the ACTION: line is the model's FINAL command — prefer it over backticks in the reasoning, which are
+    # usually fragments ("use `chmod +x`...") that drop the argument.
     if "ACTION:" in text.upper():
         c = _clean(text[text.upper().rfind("ACTION:") + 7:].strip().splitlines()[0])
         if c.upper().startswith("DONE") or _looks_like_cmd(c):
             return c
+    # else the model wrapped it in backticks ("...using `openssl x509 ...`") — take the longest valid one
+    cands = [_clean(b) for b in re.findall(r"`([^`\n]+)`", text)]
+    cands = [c for c in cands if _looks_like_cmd(c)]
+    if cands:
+        return max(cands, key=len)
     m = re.search(r"```(?:bash|sh)?\s*\n?(.+?)```", text, re.S)
     if m and _looks_like_cmd(m.group(1).strip().splitlines()[0].strip()):
         return m.group(1).strip().splitlines()[0].strip()
@@ -111,9 +114,11 @@ def reason(req: ReasonReq):
     thinking, mx = EFFORT.get(req.effort, EFFORT["normal"])
     lessons = req.lessons or (_recall(req.recall_ns, req.problem, req.recall_k) if (req.recall_ns and MEMORY_URL) else [])
     sysp = ("You are a capable problem-solver. Reason about the task" +
-            (". Look at the terminal session so far: if the task's requirements are already satisfied, "
-             "reply with exactly `ACTION: DONE`. Otherwise end with one line `ACTION: <the single exact "
-             "shell command to run next>` — a bare shell command, no prose, no backticks."
+            (". Fix the ROOT CAUSE, never work around the symptom — and test the exact invocation the user "
+             "would use (e.g. `./script.sh`, not `bash script.sh`). Look at the terminal session so far: if "
+             "the task's requirements are genuinely satisfied, reply with exactly `ACTION: DONE`. Otherwise "
+             "end with one line `ACTION: <the single exact shell command to run next>` — a bare shell "
+             "command, no prose, no backticks."
              if req.want == "command" else " and give a clear, correct answer."))
     msgs = [{"role": "system", "content": sysp}, {"role": "user", "content": req.problem}]
     if lessons:

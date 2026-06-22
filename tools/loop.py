@@ -67,8 +67,10 @@ def instruction():
 
 def run_test():
     sh("docker", "cp", f"{TB}/tests", f"{CT}:/tests")
-    sh("docker", "exec", CT, "bash", "-lc", "pip install -q pytest 2>/dev/null")
-    r = sh("docker", "exec", CT, "bash", "-lc", "cd /app && python -m pytest /tests/test_outputs.py -q 2>&1 | tail -5")
+    py = "python3" if "python3" in sh("docker", "exec", CT, "bash", "-lc", "command -v python3 || true").stdout else "python"
+    sh("docker", "exec", CT, "bash", "-lc", f"{py} -m pip install -q --break-system-packages pytest 2>/dev/null || pip install -q pytest 2>/dev/null")
+    r = sh("docker", "exec", CT, "bash", "-lc",
+           f"cd /app && {py} -m pytest /tests/test_outputs.py -q 2>&1 | tail -6")
     return r.stdout
 
 
