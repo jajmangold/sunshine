@@ -1,0 +1,49 @@
+# Sunshine model registry — the model-agnostic core.
+# Organs/front-ends reference ROLES (main/worker/vision/strong), never a model name.
+# Swapping a model = one line here. Backends are pluggable.
+
+defaults:
+  backend: 1cat-vllm          # 1cat-vllm | vllm | llamacpp | openai
+
+roles:
+  # capable reasoner — the "main model" (small but smart). Hijacked by retrieval, run sparingly.
+  main:
+    model: qwen3.5-4b
+    repo: Qwen/Qwen3.5-4B
+    quant: w4a16              # AutoRound; fits one 16GB sm70 card
+    serves: [reason]
+
+  # tiny fast worker — route/distill/format/judge. Grammar-constrained. Swarmable. Allowed to be dumb.
+  worker:
+    model: qwen3.5-0.8b
+    repo: Qwen/Qwen3.5-0.8B
+    quant: w4a16
+    serves: [fast]
+    grammar: true             # MUST support guided/grammar decoding (vLLM xgrammar)
+
+  # multimodal — captioning, VLM-judge for studio's best-of-N.
+  vision:
+    model: qwen-vl
+    repo: Qwen/Qwen3.5-VL-4B   # placeholder; pin when chosen
+    serves: [verify.vlm, studio.caption]
+
+  # optional escalation when main isn't enough (off by default — keep it rare).
+  strong:
+    model: null
+    repo: null
+
+backends:
+  1cat-vllm:
+    image: local/qwen9b-1cat:gdnmin
+    args: ["--quantization","auto-round","--attention-backend","TRITON_ATTN","--kv-cache-dtype","fp8_e5m2"]
+  vllm:
+    image: vllm/vllm-openai:latest
+  llamacpp:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+  openai:
+    base_url: null            # remote OpenAI-compatible endpoint
+
+# Demoted (still usable, no longer load-bearing): kept for A/B and continuity.
+alternatives:
+  reasoners: [nanbeige4.1-3b, qwen3.5-9b]
+  workers:   [lfm2.5i-1.2b]   # note: weak/unusual license — not a default

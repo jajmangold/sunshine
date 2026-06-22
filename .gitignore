@@ -1,0 +1,18 @@
+# model weights & caches (huge; never in git)
+models/
+*.gguf
+*.safetensors
+*.npz
+*.parquet
+__pycache__/
+*.pyc
+.venv/
+# secrets & local env
+.env
+*.env
+!.env.example
+secrets/
+*-tunnel.json
+cloudflared/*.json
+data/
+runs/
