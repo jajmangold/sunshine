@@ -71,6 +71,7 @@ _LANGS = {"python": [r"\bpython\b", r"\.py\b", r"\bpip\b", r"\bpytest\b"], "java
 
 FACET_ON = os.getenv("SUN_FACET", "on") == "on"
 SEMANTIC_LD = os.getenv("SUN_SEMANTIC_LD", "on") == "on"   # semantic (recurring-error) loop-detect + thinking re-frame
+DIRECTIVE_RECALL = os.getenv("SUN_DIRECTIVE_RECALL", "on") == "on"  # surface recalled fix AT the action point (vs buried system note)
 
 
 def _query_facets(query):
@@ -228,7 +229,7 @@ def gen_text(msgs, thinking=True):
     return _call(msgs, max_tokens=1500, thinking=thinking)
 
 
-def turn(msgs, tools, recent_sigs=(), loop_detect=False, reason_traces=None):
+def turn(msgs, tools, recent_sigs=(), loop_detect=False, reason_traces=None, action_hint=None):
     """Shared core -> (('text',content)|('tool',name,args), tokens). Single constrained call —
     but if reasoning traces are recalled, FIRST hijack the model's thought with them (it owns the
     reasoning), THEN emit the grammar action informed by that reasoning. (Grammar can't co-exist with
@@ -249,7 +250,12 @@ def turn(msgs, tools, recent_sigs=(), loop_detect=False, reason_traces=None):
         return ("text", t), tok + u.get("completion_tokens", 0)
     schema = _action_schema(tools)
     names = [_name_of(t) for t in tools]
-    nudge = {"role": "user", "content": 'Take your next action: call a tool as {"tool":<name>,"args":{...}} '
+    hint = ""
+    if action_hint:                                          # LEVER #2: recalled fix AT the action point, not buried in system
+        hint = ("Known fix(es) from past experience relevant to the CURRENT situation:\n"
+                + "\n".join("• " + t.strip() for t in action_hint[:2])
+                + "\nIf one applies to the error/task at hand, APPLY IT in your next action instead of improvising. ")
+    nudge = {"role": "user", "content": hint + 'Take your next action: call a tool as {"tool":<name>,"args":{...}} '
              'or answer as {"respond":"..."}.'}
     txt, u = _call(msgs + [nudge], schema=schema, max_tokens=1500, temp=0.2)
     tok += u.get("completion_tokens", 0)
@@ -366,14 +372,17 @@ async def openai_chat(req: Request):
     hijack = req.headers.get("x-sun-reason", "off").lower() in ("on", "1", "true")
     rc = req.headers.get("x-sun-recall", "on").lower() not in ("off", "0", "false")
     recent = _recent_sigs_openai(body.get("messages", []))
-    traces = note = None
+    traces = note = hintarg = None
     if rc or hijack:
         users = [m["content"] for m in body.get("messages", []) if m.get("role") == "user" and isinstance(m.get("content"), str)]
         traces = recall_reasoning((users[0] if users else "") + "  " + (users[-1] if len(users) > 1 else "")) or None
         if traces and rc:
-            note = "\n".join("- " + t for t in traces)
+            if DIRECTIVE_RECALL:
+                hintarg = traces                         # deliver AT the action point (lever #2)
+            else:
+                note = "\n".join("- " + t for t in traces)   # buried system note (baseline)
     msgs = _prep(body.get("messages", []), tools, recall_note=note)
-    result, tok = turn(msgs, tools, recent, ld, traces if hijack else None)
+    result, tok = turn(msgs, tools, recent, ld, traces if hijack else None, action_hint=hintarg)
     resp = _openai_resp(result, body.get("model", MODEL_ID), tok)
     if body.get("stream"):
         return StreamingResponse(_openai_sse(resp), media_type="text/event-stream")
@@ -428,14 +437,17 @@ async def anthropic_messages(req: Request):
     hijack = req.headers.get("x-sun-reason", "off").lower() in ("on", "1", "true")
     rc = req.headers.get("x-sun-recall", "on").lower() not in ("off", "0", "false")
     recent = _recent_sigs_anthropic(body.get("messages", []))
-    traces = note = None
+    traces = note = hintarg = None
     if rc or hijack:
         users = [_blocks_text(m.get("content")) for m in body.get("messages", []) if m.get("role") == "user"]
         traces = recall_reasoning((users[0] if users else "") + "  " + (users[-1] if len(users) > 1 else "")) or None
         if traces and rc:
-            note = "\n".join("- " + t for t in traces)
+            if DIRECTIVE_RECALL:
+                hintarg = traces                         # deliver AT the action point (lever #2)
+            else:
+                note = "\n".join("- " + t for t in traces)
     msgs = _prep(body.get("messages", []), tools, system_top=body.get("system"), recall_note=note)
-    result, tok = turn(msgs, tools, recent, ld, traces if hijack else None)
+    result, tok = turn(msgs, tools, recent, ld, traces if hijack else None, action_hint=hintarg)
     resp = _anthropic_resp(result, body.get("model", MODEL_ID), tok)
     if body.get("stream"):
         return StreamingResponse(_anthropic_sse(resp), media_type="text/event-stream")
