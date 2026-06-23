@@ -69,9 +69,14 @@ _LANGS = {"python": [r"\bpython\b", r"\.py\b", r"\bpip\b", r"\bpytest\b"], "java
     "rust": [r"\brust\b", r"\bcargo\b", r"\.rs\b"], "go": [r"\bgolang\b", r"\.go\b"], "bash": [r"\bbash\b", r"\.sh\b"], "sql": [r"\bsqlite\b", r"\bsql\b"]}
 
 
+FACET_ON = os.getenv("SUN_FACET", "on") == "on"
+
+
 def _query_facets(query):
     """Extract retrieval facets (error class, framework, log symptom, language) — the way an engineer
     searches: by error message + tag. Returns facets in PRIORITY order (most discriminative first)."""
+    if not FACET_ON:
+        return []
     t = query.lower(); out = []
     m = _ERR_RE.search(query)
     if m:

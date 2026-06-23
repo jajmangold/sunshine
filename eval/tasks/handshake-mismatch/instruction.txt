@@ -1,0 +1,1 @@
+Start the server by running server.py so it writes /app/started.txt. It currently fails when you run it — diagnose the cause from the error and fix it, then run it successfully.
