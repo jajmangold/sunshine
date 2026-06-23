@@ -71,14 +71,16 @@ def handle(body):
             tok += r.get("tokens", 0)
     except Exception:
         cmd, tok = "", 0
-    # don't accept "done" before anything has been done — the 4B prematurely completes (hello-world: 0 cmds).
-    if (not cmd or cmd.upper().startswith("DONE")) and not recent:
-        nudge = (instr + "\n\nThe terminal is fresh and the task is NOT yet done. Output the FIRST concrete "
-                 "shell command to start solving it — do not say done.")
+    # don't accept "done" until the agent has actually ATTEMPTED the task — the 4B quits after 0-1 commands
+    # (hello-world: 0 cmds; fix-permissions: one wrong `bash -n` then DONE). Force >=2 real attempts + verify.
+    if (not cmd or cmd.upper().startswith("DONE")) and len(recent) < 2:
+        nudge = (instr + f"\n\nProgress so far: {recent or 'nothing done yet'}. The task is NOT verified complete. "
+                 "Do NOT say done. Inspect the actual state (e.g. ls -la, check permissions/contents) and output the "
+                 "single NEXT concrete shell command that makes real progress toward the requirement.")
         try:
             r = _post(KERNEL + "/solve", {"task": instr, "context": nudge[-1800:], "skill": "terminus", "effort": "deep"})
             c2 = (r.get("intent") or "").strip(); tok += r.get("tokens", 0)
-            if c2 and not c2.upper().startswith("DONE"):
+            if c2 and not c2.upper().startswith("DONE") and c2.rstrip("\n") not in [c.rstrip("\n") for c in recent]:
                 cmd = c2
         except Exception:
             pass
