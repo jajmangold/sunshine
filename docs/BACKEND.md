@@ -90,3 +90,6 @@ define-as-you-go, both making a small model reliable by taking structure off its
 The kernel under-absorbed reason-engine's best code: `code_solve` (best-of-N + WASM repair) and the critic
 loop. Re-express `code_solve` as a kernel **code skill** (reason N → verify.bestof → emit verified) reusing
 the verify organ; flesh out `verify.critic`. Don't port the monolith.
+
+## Reasoning-injection is a REQUIRED augmentation (do not drop it)
+Every model-facing path carries TWO recall augmentations, not one: (1) knowledge recall → appended system note (facts); (2) **reasoning-trace recall → adapted unclosed `<think>` prefill** so the model OWNS the reasoning (the Nanbeige retrieval-hijack). The faithful backend implements both (`recall_reasoning`+`_reason_prefill`+two-phase reason→grammar-act, default-on/header `x-sun-reason:off` to disable). A path that injects only knowledge is INCOMPLETE — this was dropped repeatedly; it is not optional.

@@ -25,8 +25,20 @@ the frontier for free and the accumulated library transfers. "Far" = *maximally 
 model you give it, self-extending its reliable reach across its experience, forever cheaper* — a moving
 ceiling pinned to the model frontier, not a fixed wall.
 
+## Reasoning-injection — the lever that moves the ceiling (CORE, default-on)
+"Well-fed, not smarter" is INCOMPLETE. Besides knowledge-injection (facts → system note), the substrate
+does **reasoning-injection**: recall a relevant **reasoning trace** → inject it as an **unclosed `<think>`
+prefill** so the model OWNS and continues it (the Nanbeige retrieval-hijack; `frontends/backend/app.py`
+`recall_reasoning` + `_reason_prefill`, default-on, gated by a strong trace hit). This lifts the model's
+*in-practice* reasoning from "what it can **generate** solo" up to **"what it can FOLLOW and VERIFY"** — a
+genuinely higher ceiling. With traces from a *stronger* source, the small model can follow steps it could
+never have generated (distillation-at-inference). It is amplification + transfer, **bounded by
+follow-ability/verify-ability** (inject reasoning it can't follow → it mangles the next step), and the
+trace must originate somewhere (verified prior success / stronger model / human).
+
 ## What it CANNOT do (irreducible)
-- Manufacture reasoning the base model never has (the 4B ceiling is real).
+- Manufacture reasoning from NOTHING (the trace must come from somewhere) or follow reasoning beyond its
+  follow-and-verify ceiling (the 4B wall is real — but it's "follow+verify," not "generate").
 - Learn **un-derivable knowledge** without an external source (license-gate proves outside-input is
   irreducible — sha256 preimage-resistance makes 0/3 a hard floor).
 - Improve on **unverifiable** axes (prose/taste/novel-design don't ratchet).

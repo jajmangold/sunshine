@@ -30,13 +30,19 @@ AGENT_PREAMBLE = ("You are an autonomous coding agent. You are BLIND to this env
                   "respond directly only for general knowledge or conversation needing no environment access.")
 
 
-def _call(messages, grammar=None, schema=None, max_tokens=1024, thinking=False, temp=0.3):
+MEMORY_URL = os.getenv("MEMORY_URL", "http://127.0.0.1:8090")
+
+
+def _call(messages, grammar=None, schema=None, max_tokens=1024, thinking=False, temp=0.3, prefill=None):
     body = {"model": MAIN_MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": temp,
             "top_p": 0.9, "chat_template_kwargs": {"enable_thinking": thinking}}
     if grammar:
         body["structured_outputs"] = {"grammar": grammar}
     elif schema:
         body["structured_outputs"] = {"json": schema}
+    if prefill is not None:                                  # the <think> hijack: model OWNS the recalled reasoning
+        body["messages"] = messages + [{"role": "assistant", "content": prefill}]
+        body["continue_final_message"] = True; body["add_generation_prompt"] = False
     r = urllib.request.Request(MAIN_URL, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     d = json.loads(urllib.request.urlopen(r, timeout=240).read())
     msg = d["choices"][0]["message"]
@@ -44,6 +50,24 @@ def _call(messages, grammar=None, schema=None, max_tokens=1024, thinking=False, 
     if "</think>" in txt:
         txt = txt.split("</think>")[-1].strip()
     return txt, d.get("usage", {})
+
+
+def recall_reasoning(query, k=2, min_sim=0.62):
+    """Retrieve relevant REASONING TRACES/approaches (not just facts) to hijack the model's thought."""
+    try:
+        r = urllib.request.Request(MEMORY_URL.rstrip("/") + "/recall",
+            data=json.dumps({"ns": ["agent-traces", "recipes", "eval-lessons"], "q": query[-1500:],
+                             "k": k, "min_sim": min_sim}).encode(), headers={"Content-Type": "application/json"})
+        return [h["value"] for h in json.loads(urllib.request.urlopen(r, timeout=12).read()).get("hits", [])]
+    except Exception:
+        return []
+
+
+def _reason_prefill(traces):
+    """Recalled reasoning as the model's OWN unclosed thought (the retrieval-hijack; Nanbeige core)."""
+    body = "  ".join(f"I recall a similar case — {t.strip()}" for t in traces[:2])
+    return ("<think>\n" + body + "  That was another situation; I'll reuse the APPROACH here with the right "
+            "values for THIS task. Let me reason out the single best next action.\n")
 
 
 # ---- faithful transcript: flatten ANY harness's messages into clean role+text the model reads ----
@@ -128,17 +152,27 @@ def gen_text(msgs, thinking=True):
     return _call(msgs, max_tokens=1500, thinking=thinking)
 
 
-def turn(msgs, tools, recent_sigs=(), loop_detect=False):
-    """Shared core -> (('text',content)|('tool',name,args), tokens). Single constrained call."""
+def turn(msgs, tools, recent_sigs=(), loop_detect=False, reason_traces=None):
+    """Shared core -> (('text',content)|('tool',name,args), tokens). Single constrained call —
+    but if reasoning traces are recalled, FIRST hijack the model's thought with them (it owns the
+    reasoning), THEN emit the grammar action informed by that reasoning. (Grammar can't co-exist with
+    open-think in one call, so reasoning-injection is two-phase: reason-with-prefill -> grammar-act.)"""
+    tok = 0
+    if reason_traces:                                        # REASONING-INJECTION (the retrieval-hijack)
+        rmsgs = msgs + [{"role": "user", "content": "Reason out the single best next action for this task."}]
+        reasoning, ru = _call(rmsgs, max_tokens=500, thinking=True, prefill=_reason_prefill(reason_traces))
+        tok += ru.get("completion_tokens", 0)
+        if reasoning.strip():
+            msgs = msgs + [{"role": "assistant", "content": "My reasoning: " + reasoning.strip()[-700:]}]
     if not tools:
         t, u = gen_text(msgs)
-        return ("text", t), u.get("completion_tokens", 0)
+        return ("text", t), tok + u.get("completion_tokens", 0)
     schema = _action_schema(tools)
     names = [_name_of(t) for t in tools]
     nudge = {"role": "user", "content": 'Take your next action: call a tool as {"tool":<name>,"args":{...}} '
              'or answer as {"respond":"..."}.'}
     txt, u = _call(msgs + [nudge], schema=schema, max_tokens=1500, temp=0.2)
-    tok = u.get("completion_tokens", 0)
+    tok += u.get("completion_tokens", 0)
     try:
         obj = json.loads(txt)
     except Exception:
@@ -233,9 +267,14 @@ async def openai_chat(req: Request):
     body = await req.json()
     tools = body.get("tools") or []
     ld = req.headers.get("x-sun-loopdetect", "on").lower() not in ("off", "0", "false")
+    ri = req.headers.get("x-sun-reason", "on").lower() not in ("off", "0", "false")
     recent = _recent_sigs_openai(body.get("messages", []))
+    traces = None
+    if ri:                                                   # REASONING-INJECTION default on (gated by a strong trace hit)
+        users = [m["content"] for m in body.get("messages", []) if m.get("role") == "user" and isinstance(m.get("content"), str)]
+        traces = recall_reasoning((users[0] if users else "") + "  " + (users[-1] if len(users) > 1 else "")) or None
     msgs = _prep(body.get("messages", []), tools)
-    result, tok = turn(msgs, tools, recent, ld)
+    result, tok = turn(msgs, tools, recent, ld, traces)
     resp = _openai_resp(result, body.get("model", MODEL_ID), tok)
     if body.get("stream"):
         return StreamingResponse(_openai_sse(resp), media_type="text/event-stream")
@@ -287,9 +326,14 @@ async def anthropic_messages(req: Request):
     body = await req.json()
     tools = body.get("tools") or []
     ld = req.headers.get("x-sun-loopdetect", "on").lower() not in ("off", "0", "false")
+    ri = req.headers.get("x-sun-reason", "on").lower() not in ("off", "0", "false")
     recent = _recent_sigs_anthropic(body.get("messages", []))
+    traces = None
+    if ri:                                                   # REASONING-INJECTION default on (gated by a strong trace hit)
+        users = [_blocks_text(m.get("content")) for m in body.get("messages", []) if m.get("role") == "user"]
+        traces = recall_reasoning((users[0] if users else "") + "  " + (users[-1] if len(users) > 1 else "")) or None
     msgs = _prep(body.get("messages", []), tools, system_top=body.get("system"))
-    result, tok = turn(msgs, tools, recent, ld)
+    result, tok = turn(msgs, tools, recent, ld, traces)
     resp = _anthropic_resp(result, body.get("model", MODEL_ID), tok)
     if body.get("stream"):
         return StreamingResponse(_anthropic_sse(resp), media_type="text/event-stream")
