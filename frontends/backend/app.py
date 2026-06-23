@@ -223,6 +223,32 @@ def _undegen(args, max_len=3000):
     return out
 
 
+def _unmatched_closers(s):
+    """Net CLOSING brackets with no matching opener (depth dips below 0). A code edit that adds lone
+    closers like 'return word})' is almost always malformed — the exact failure the hard real-world eval hit."""
+    depth = {"(": 0, "[": 0, "{": 0}; pairs = {")": "(", "]": "[", "}": "{"}; bad = 0
+    for ch in s:
+        if ch in depth:
+            depth[ch] += 1
+        elif ch in pairs:
+            o = pairs[ch]
+            if depth[o] > 0:
+                depth[o] -= 1
+            else:
+                bad += 1
+    return bad
+
+
+def _malformed_edit(args):
+    """A tool-call arg whose code content adds >=2 unmatched closing brackets — a likely file-corrupting edit."""
+    if not isinstance(args, dict):
+        return False
+    for v in args.values():
+        if isinstance(v, str) and ("\n" in v or "return " in v or "def " in v or "=" in v) and _unmatched_closers(v) >= 2:
+            return True
+    return False
+
+
 def _recurring_error(msgs, window=5, thresh=2):
     """SEMANTIC loop signal the exact-sig detector misses: the agent's ACTIONS vary but it keeps hitting
     the SAME error (a doomed frame). Look at recent tool results; if one error signature recurs, it's stuck."""
@@ -312,6 +338,18 @@ def turn(msgs, tools, recent_sigs=(), loop_detect=False, reason_traces=None, act
                 return ("text", o2.get("respond", "")), tok
             except Exception:
                 pass
+        if _malformed_edit(args):                                      # FIX: catch file-corrupting edits before they land
+            fix = {"role": "user", "content": "Your edit adds UNMATCHED closing brackets (e.g. a stray '}' or "
+                   "')' as in 'return word})') — this will break the file's syntax. Re-emit the SAME edit with "
+                   "balanced brackets; change only what's necessary and keep delimiters matched."}
+            txt3, u3 = _call(msgs + [fix, nudge], schema=schema, max_tokens=1500, temp=0.2, freq_penalty=0.3)
+            tok += u3.get("completion_tokens", 0)
+            try:
+                o3 = json.loads(txt3)
+                if "tool" in o3 and o3["tool"] in names and not _malformed_edit(o3.get("args", {})):
+                    return ("tool", o3["tool"], _undegen(o3.get("args", {}))), tok
+            except Exception:
+                pass
         return ("tool", name, _undegen(args)), tok
     return ("text", obj.get("respond", txt)), tok
 
@@ -344,6 +382,11 @@ def _prep(messages, tools, system_top=None, recall_note=None):
     add = ""
     if tools:                                                # blindness preamble + tool list
         add += "\n\n" + AGENT_PREAMBLE + "\n\n" + _tooldesc(tools)
+        if any(n in {"edit", "write", "patch", "str_replace", "apply_patch"} for n in (_name_of(t) for t in tools)):
+            add += ("\n\nWHEN EDITING CODE: make minimal, precise edits and keep all brackets/quotes matched. "
+                    "Immediately AFTER any edit, your next action must verify the file still parses "
+                    "(e.g. run `python -m py_compile <file>`); if it reports a SyntaxError, fix ONLY that exact "
+                    "spot (often a stray bracket) before doing anything else — never leave or work around a broken file.")
     if recall_note:                                          # recalled experience as a NOTE (measured-best for facts)
         add += "\n\n[Relevant experience — apply the approach/values if useful]\n" + recall_note
     if add:
