@@ -96,3 +96,21 @@ N=18**). The pool's job is **not speed — it's affordable higher N**: parallel 
 until the rare perfect is reliably sampled, turning a swingy 34–149 into a stable ~148. `pluralize` alone
 went 14→109 from N=8→18. The `p`-too-small tail (`singularize`, `titleize`) is unmoved by N and needs the
 repair round / a stronger model — the boundary holds.
+
+### Closing the loop: the temperature schedule is critical (final result 254/314)
+Two schedule bugs were silently capping every high-N run:
+1. `0.2 + 0.08*i` reaches **temp 2.04 at N=24** — candidates 13+ are at garbage temperatures, halving effective N.
+2. The **canonical "perfect" comes from LOW temp** (e.g. the regex `pluralize` is near-deterministic) — a schedule
+   that floors at 0.3 rarely emits it.
+
+Fix: `temp = 0.1 + 0.7 * (i % 8)/8` — **low floor (catch the canonical solution) + spread to 0.8 (diversity)**,
+cycling for any N. Effect on the 6-function general solve (same 4B, best-of-24, pool, 1 repair round):
+
+| schedule | total | pluralize |
+|---|---|---|
+| `0.2 + 0.08*i` (→2.04) | 162–165 | ~50 |
+| **`0.1 + 0.7*(i%8)/8`** | **254/314 (81%)** | **143** |
+
+`titleize` stays at 0 — the genuine `p≈0` floor (the 4B essentially never emits a working one; needs a stronger
+model). Everything else lands. **Same Qwen3.5-4B that gets ~0 one-shot on a 6-function stub reaches 81% via
+the full loop: low-temp-floor best-of-24 over a 3-instance pool + verifier-select + repair + AST-safe apply.**

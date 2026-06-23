@@ -84,34 +84,43 @@ def apply(file, name, fn):
 
 
 def score(repo, k):
-    r = subprocess.run(["python3", "-m", "pytest", "-k", k, "-q", "--no-header", "--tb=no"],
+    """Verifier -> (passed, failed, sample failing assertions). The failed count drives the repair loop."""
+    r = subprocess.run(["python3", "-m", "pytest", "-k", k, "-q", "--no-header", "--tb=line"],
                        capture_output=True, text=True, cwd=repo)
     if "during collection" in r.stdout:
-        return 0
-    return int((re.search(r"(\d+) passed", r.stdout) or ["", 0])[1])
+        return 0, 999, []
+    p = int((re.search(r"(\d+) passed", r.stdout) or ["", 0])[1])
+    f = int((re.search(r"(\d+) failed", r.stdout) or ["", 0])[1])
+    fails = re.findall(r"assert.*$", r.stdout, re.M)[:8]
+    return p, f, fails
 
 
-def solve(file, repo, name, ctx, repair_rounds=1):
+def solve(file, repo, name, ctx, repair_rounds=int(os.getenv("SCALE_REPAIR","2"))):
     stub = func_src(file, name)
     base = (f"Implement this Python function COMPLETELY using the module's imports and data below:\n\n{ctx}\n\n"
             f"{stub}\n\nThe docstring has examples. Output ONLY the complete `{name}` function in a ```python block.")
-    best_src, best, first = stub, -1, 0
+    best_src, best, first, best_fails = stub, -1, 0, []
     prompt = base
     for rnd in range(repair_rounds + 1):
-        with ThreadPoolExecutor(int(os.getenv("SCALE_CONC", str(3*len(POOL))))) as ex:  # pool-aware: fan across instances
-            cands = list(ex.map(lambda it: extract(gen(prompt, 0.2 + 0.08 * it[0], it[0]), name), list(enumerate(range(N)))))
+        with ThreadPoolExecutor(int(os.getenv("SCALE_CONC", str(3 * len(POOL))))) as ex:  # fan across the pool
+            cands = list(ex.map(lambda it: extract(gen(prompt, 0.1 + 0.7 * ((it[0] % 8) / 8), it[0]), name), list(enumerate(range(N)))))
         round_scores = []
         for fn in cands:                                                # serial verify (shared file)
             apply(file, name, stub)
-            s = score(repo, name) if (fn and apply(file, name, fn)) else 0
-            round_scores.append(s)
-            if s > best:
-                best, best_src = s, func_src(file, name)
+            p = score(repo, name)[0] if (fn and apply(file, name, fn)) else 0
+            round_scores.append(p)
+            if p > best:
+                best, best_src = p, func_src(file, name)
         apply(file, name, best_src)
         if rnd == 0:
             first = round_scores[0] if round_scores else 0              # best-of-1 = first candidate
-        if best > 0:
-            break
+        p, f, best_fails = score(repo, name)                            # re-score the winner to get its failures
+        if f == 0:
+            break                                                       # fully solved -> stop
+        prompt = (f"{base}\n\nThe best attempt so far passes {best} but STILL FAILS these (expected==actual):\n"
+                  + "\n".join(best_fails) + f"\n\nIts current code:\n{func_src(file, name)}\n\n"
+                  f"Fix those specific cases without breaking the passing ones. "
+                  f"Output ONLY the complete corrected `{name}` function in a ```python block.")
     apply(file, name, best_src)
     return name, first, best
 
@@ -122,8 +131,8 @@ if __name__ == "__main__":
     stubs = discover_stubs(file)
     ctx = focused_context(file)
     print(f"discovered {len(stubs)} stubbed targets: {stubs}", flush=True)
-    print(f"BEFORE: {score(repo, sel)} passing", flush=True)
+    print(f"BEFORE: {score(repo, sel)[0]} passing", flush=True)
     for name in stubs:
         nm, b1, bn = solve(file, repo, name, ctx)
         print(f"  solved {nm}: best-of-1={b1} best-of-{N}={bn}", flush=True)
-    print(f"\nVERIFIED SOLVE total: {score(repo, sel)} passing (same {MODEL}, {len(stubs)} funcs, best-of-{N} + verifier)")
+    print(f"\nVERIFIED SOLVE total: {score(repo, sel)[0]} passing (same {MODEL}, {len(stubs)} funcs, best-of-{N} + verifier)")
