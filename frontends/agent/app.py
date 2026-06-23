@@ -48,14 +48,16 @@ def _prior_commands(msgs):
 def handle(body):
     msgs = body.get("messages", [])
     users = [m["content"] for m in msgs if m.get("role") == "user" and isinstance(m.get("content"), str)]
-    task = users[0] if users else ""
-    # task instruction lives before "Current terminal state:" — keep it FULL (truncating drops requirements)
-    instr = task.split("Current terminal state:")[0]
-    instr = (instr.split("Instruction:")[-1] if "Instruction:" in instr else instr).strip()[:3000]
-    # context = the session HISTORY (agent needs memory of what it did, else it loops). Terminus sends
-    # the accumulated terminal pane in later user turns; pass the most recent as the running transcript.
-    obs = users[-1] if len(users) > 1 else ""
-    obs_tail = obs.replace("New Terminal Output:", "").strip()[-1500:] or "fresh session"
+    # terminus resends the full prompt template each turn with the updated state; use the LATEST.
+    # template: "Instruction:\n{instruction}\n\nYour response must be a JSON object...{schema}...
+    #            The current terminal state is:\n{terminal_state}"
+    task = users[-1] if users else ""
+    instr = task.split("Instruction:", 1)[-1] if "Instruction:" in task else task
+    # DROP the response-schema + boilerplate (it made the 4B echo "json") and the terminal state
+    instr = instr.split("Your response must be")[0].split("The current terminal state is:")[0].strip()[:3000]
+    ts = task.split("The current terminal state is:")[-1] if "The current terminal state is:" in task else \
+        (users[-1] if len(users) > 1 else "")
+    obs_tail = ts.replace("New Terminal Output:", "").strip()[-1500:] or "fresh session"
     recent = [c for c in _prior_commands(msgs)[-3:]]
     try:
         r = _post(KERNEL + "/solve", {"task": instr, "context": obs_tail, "skill": "terminus", "effort": EFFORT})
@@ -67,8 +69,19 @@ def handle(body):
             r = _post(KERNEL + "/solve", {"task": instr, "context": nudge[-1800:], "skill": "terminus", "effort": "deep"})
             cmd = (r.get("intent") or "").strip() or cmd
             tok += r.get("tokens", 0)
-    except Exception as e:
+    except Exception:
         cmd, tok = "", 0
+    # don't accept "done" before anything has been done — the 4B prematurely completes (hello-world: 0 cmds).
+    if (not cmd or cmd.upper().startswith("DONE")) and not recent:
+        nudge = (instr + "\n\nThe terminal is fresh and the task is NOT yet done. Output the FIRST concrete "
+                 "shell command to start solving it — do not say done.")
+        try:
+            r = _post(KERNEL + "/solve", {"task": instr, "context": nudge[-1800:], "skill": "terminus", "effort": "deep"})
+            c2 = (r.get("intent") or "").strip(); tok += r.get("tokens", 0)
+            if c2 and not c2.upper().startswith("DONE"):
+                cmd = c2
+        except Exception:
+            pass
     done = cmd.upper().startswith("DONE") or not cmd
     content = to_terminus(cmd, done)
     return {"id": "chatcmpl-sun-agent", "object": "chat.completion", "model": body.get("model", "sunshine"),
