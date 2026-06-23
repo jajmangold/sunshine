@@ -31,6 +31,7 @@ AGENT_PREAMBLE = ("You are an autonomous coding agent. You are BLIND to this env
 
 
 MEMORY_URL = os.getenv("MEMORY_URL", "http://127.0.0.1:8090")
+REASON_NS = os.getenv("SUN_REASON_NS", "agent-traces,recipes,eval-lessons").split(",")
 
 
 def _call(messages, grammar=None, schema=None, max_tokens=1024, thinking=False, temp=0.3, prefill=None):
@@ -56,7 +57,7 @@ def recall_reasoning(query, k=2, min_sim=0.62):
     """Retrieve relevant REASONING TRACES/approaches (not just facts) to hijack the model's thought."""
     try:
         r = urllib.request.Request(MEMORY_URL.rstrip("/") + "/recall",
-            data=json.dumps({"ns": ["agent-traces", "recipes", "eval-lessons"], "q": query[-1500:],
+            data=json.dumps({"ns": REASON_NS, "q": query[-1500:],
                              "k": k, "min_sim": min_sim}).encode(), headers={"Content-Type": "application/json"})
         return [h["value"] for h in json.loads(urllib.request.urlopen(r, timeout=12).read()).get("hits", [])]
     except Exception:
@@ -162,8 +163,12 @@ def turn(msgs, tools, recent_sigs=(), loop_detect=False, reason_traces=None):
         rmsgs = msgs + [{"role": "user", "content": "Reason out the single best next action for this task."}]
         reasoning, ru = _call(rmsgs, max_tokens=500, thinking=True, prefill=_reason_prefill(reason_traces))
         tok += ru.get("completion_tokens", 0)
+        # the trace content lives in the (stripped) <think>; carry BOTH the recalled approach AND the
+        # model's own continuation into the action phase, else the injected reasoning evaporates.
+        ctx = "[Recalled approach] " + "  ".join(t.strip()[:320] for t in reason_traces[:2])
         if reasoning.strip():
-            msgs = msgs + [{"role": "assistant", "content": "My reasoning: " + reasoning.strip()[-700:]}]
+            ctx += "\n[My reasoning] " + reasoning.strip()[-400:]
+        msgs = msgs + [{"role": "user", "content": ctx}]
     if not tools:
         t, u = gen_text(msgs)
         return ("text", t), tok + u.get("completion_tokens", 0)
@@ -218,14 +223,18 @@ def _recent_sigs_anthropic(messages, k=3):
     return sigs[-k:]
 
 
-def _prep(messages, tools, system_top=None):
+def _prep(messages, tools, system_top=None, recall_note=None):
     msgs = normalize(messages, system_top)
-    if tools:                                                # prepend blindness preamble + append tool list
-        note = AGENT_PREAMBLE + "\n\n" + _tooldesc(tools)
+    add = ""
+    if tools:                                                # blindness preamble + tool list
+        add += "\n\n" + AGENT_PREAMBLE + "\n\n" + _tooldesc(tools)
+    if recall_note:                                          # recalled experience as a NOTE (measured-best for facts)
+        add += "\n\n[Relevant experience — apply the approach/values if useful]\n" + recall_note
+    if add:
         if msgs and msgs[0]["role"] == "system":
-            msgs[0]["content"] += "\n\n" + note
+            msgs[0]["content"] += add
         else:
-            msgs = [{"role": "system", "content": note}] + msgs
+            msgs = [{"role": "system", "content": add.strip()}] + msgs
     return msgs
 
 
@@ -267,14 +276,19 @@ async def openai_chat(req: Request):
     body = await req.json()
     tools = body.get("tools") or []
     ld = req.headers.get("x-sun-loopdetect", "on").lower() not in ("off", "0", "false")
-    ri = req.headers.get("x-sun-reason", "on").lower() not in ("off", "0", "false")
+    # MEASURED: deliver recalled experience as a NOTE by default (works for facts); the <think> HIJACK
+    # corrupts precise facts (it grabbed a hash over the key) -> hijack is OPT-IN (x-sun-reason:on) for steering.
+    hijack = req.headers.get("x-sun-reason", "off").lower() in ("on", "1", "true")
+    rc = req.headers.get("x-sun-recall", "on").lower() not in ("off", "0", "false")
     recent = _recent_sigs_openai(body.get("messages", []))
-    traces = None
-    if ri:                                                   # REASONING-INJECTION default on (gated by a strong trace hit)
+    traces = note = None
+    if rc:
         users = [m["content"] for m in body.get("messages", []) if m.get("role") == "user" and isinstance(m.get("content"), str)]
         traces = recall_reasoning((users[0] if users else "") + "  " + (users[-1] if len(users) > 1 else "")) or None
-    msgs = _prep(body.get("messages", []), tools)
-    result, tok = turn(msgs, tools, recent, ld, traces)
+        if traces:
+            note = "\n".join("- " + t for t in traces)
+    msgs = _prep(body.get("messages", []), tools, recall_note=note)
+    result, tok = turn(msgs, tools, recent, ld, traces if hijack else None)
     resp = _openai_resp(result, body.get("model", MODEL_ID), tok)
     if body.get("stream"):
         return StreamingResponse(_openai_sse(resp), media_type="text/event-stream")
@@ -326,14 +340,17 @@ async def anthropic_messages(req: Request):
     body = await req.json()
     tools = body.get("tools") or []
     ld = req.headers.get("x-sun-loopdetect", "on").lower() not in ("off", "0", "false")
-    ri = req.headers.get("x-sun-reason", "on").lower() not in ("off", "0", "false")
+    hijack = req.headers.get("x-sun-reason", "off").lower() in ("on", "1", "true")
+    rc = req.headers.get("x-sun-recall", "on").lower() not in ("off", "0", "false")
     recent = _recent_sigs_anthropic(body.get("messages", []))
-    traces = None
-    if ri:                                                   # REASONING-INJECTION default on (gated by a strong trace hit)
+    traces = note = None
+    if rc:
         users = [_blocks_text(m.get("content")) for m in body.get("messages", []) if m.get("role") == "user"]
         traces = recall_reasoning((users[0] if users else "") + "  " + (users[-1] if len(users) > 1 else "")) or None
-    msgs = _prep(body.get("messages", []), tools, system_top=body.get("system"))
-    result, tok = turn(msgs, tools, recent, ld, traces)
+        if traces:
+            note = "\n".join("- " + t for t in traces)
+    msgs = _prep(body.get("messages", []), tools, system_top=body.get("system"), recall_note=note)
+    result, tok = turn(msgs, tools, recent, ld, traces if hijack else None)
     resp = _anthropic_resp(result, body.get("model", MODEL_ID), tok)
     if body.get("stream"):
         return StreamingResponse(_anthropic_sse(resp), media_type="text/event-stream")

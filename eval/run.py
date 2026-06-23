@@ -214,6 +214,7 @@ if __name__ == "__main__":
         if a == "--steps": steps = int(args[i + 1])
         if a == "--repomap": abl["RepoMap"] = args[i + 1]
         if a == "--recall": abl["Recall"] = args[i + 1]
+        if a == "--reason": abl["Reason"] = args[i + 1]
         if a == "--distill": abl["Distill"] = args[i + 1]
         if a == "--loopdetect": abl["LoopDetect"] = args[i + 1]
         if a == "--label": label = args[i + 1]

@@ -24,3 +24,20 @@ The bare faithful backend is RELIABLE (format) but WEAK (behavior: malformed com
 augmentation rungs are precisely what turn reliable-but-weak into excellent — and the ladder will quantify
 each one's lift. Baseline took 379s/task → need the latency work (single-call tool emission) before the
 full suite × all-rungs is fast enough; prefix caching was step one.
+
+## Knowledge-injection vs reasoning-injection — MEASURED (don't conflate them)
+3-arm A/B on make-build-bare (sha256-gated key, un-derivable; same recalled lesson, two delivery channels):
+
+| channel | solved | note |
+|---|---|---|
+| bare (no recall) | 0/3 | hard floor |
+| **knowledge → system NOTE** | **3/3** | precise, authoritative — the agent uses the key correctly |
+| reasoning → `<think>` HIJACK | **0/3** | the reasoning phase CORRUPTED the fact — agent ran the HASH instead of the key (843 vs 81 tok) |
+
+**Finding:** the two are NOT interchangeable. A FACT belongs in a note; forcing it through the think-prefill
+hijack adds noise and corrupts it. So: backend recall delivers as a NOTE by default (the working channel,
+now self-augmenting 0/3→3/3); the `<think>` hijack is OPT-IN (`x-sun-reason:on`) for STEERING on
+reasoning/strategy turns (its home is the reason organ's single-phase ACTION-extraction path — grammar
+tool-calls and open-think are architecturally in tension; the two-phase split loses the steer). The proper
+reasoning-injection win (steering a strategy the model fumbles) is still UNMEASURED — needs a strategy task,
+not a fact task. The ablation caught my own wrong default (hijack-for-everything) — methodology working.
