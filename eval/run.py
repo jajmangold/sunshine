@@ -100,9 +100,10 @@ class Task:
         return yaml.safe_load(open(f"{self.dir}/task.yaml"))["instruction"]
 
     def test(self):
-        if self.local:                                               # run PRISTINE tests from a clean path
+        if self.local:                                               # PRISTINE verifier; verify/ is HIDDEN from the agent (else tests/)
+            src = "verify" if os.path.isdir(f"{self.dir}/verify") else "tests"
             sh("docker", "exec", self.ct, "bash", "-lc", "rm -rf /eval_tests")
-            sh("docker", "cp", f"{self.dir}/tests", f"{self.ct}:/eval_tests")
+            sh("docker", "cp", f"{self.dir}/{src}", f"{self.ct}:/eval_tests")
             r = sh("docker", "exec", self.ct, "bash", "-lc", "cd /app && python -m pytest /eval_tests/ -q 2>&1 | tail -3")
         else:
             sh("docker", "cp", f"{self.dir}/tests", f"{self.ct}:/tests")
@@ -140,7 +141,7 @@ def run(name, steps=20, ablation=None, label=""):
                 sysmsg = SYS + "\n\n[Repository map — structural overview of the codebase; use it to navigate " \
                     "to the relevant file/function before reading/editing]\n" + m
                 log(f"  [repo-map injected: ~{len(m)//4} tok]")
-    if ablation.get("Recall") == "on":                               # gated memory recall (the rung)
+    if False and ablation.get("Recall") == "on":                     # eval-side recall DISABLED (backend does it now)
         try:
             req = urllib.request.Request("http://127.0.0.1:8090/recall",
                 data=json.dumps({"ns": [NS, "recipes", "agent-traces"], "q": instr,

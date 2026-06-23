@@ -282,10 +282,10 @@ async def openai_chat(req: Request):
     rc = req.headers.get("x-sun-recall", "on").lower() not in ("off", "0", "false")
     recent = _recent_sigs_openai(body.get("messages", []))
     traces = note = None
-    if rc:
+    if rc or hijack:
         users = [m["content"] for m in body.get("messages", []) if m.get("role") == "user" and isinstance(m.get("content"), str)]
         traces = recall_reasoning((users[0] if users else "") + "  " + (users[-1] if len(users) > 1 else "")) or None
-        if traces:
+        if traces and rc:
             note = "\n".join("- " + t for t in traces)
     msgs = _prep(body.get("messages", []), tools, recall_note=note)
     result, tok = turn(msgs, tools, recent, ld, traces if hijack else None)
@@ -344,10 +344,10 @@ async def anthropic_messages(req: Request):
     rc = req.headers.get("x-sun-recall", "on").lower() not in ("off", "0", "false")
     recent = _recent_sigs_anthropic(body.get("messages", []))
     traces = note = None
-    if rc:
+    if rc or hijack:
         users = [_blocks_text(m.get("content")) for m in body.get("messages", []) if m.get("role") == "user"]
         traces = recall_reasoning((users[0] if users else "") + "  " + (users[-1] if len(users) > 1 else "")) or None
-        if traces:
+        if traces and rc:
             note = "\n".join("- " + t for t in traces)
     msgs = _prep(body.get("messages", []), tools, system_top=body.get("system"), recall_note=note)
     result, tok = turn(msgs, tools, recent, ld, traces if hijack else None)

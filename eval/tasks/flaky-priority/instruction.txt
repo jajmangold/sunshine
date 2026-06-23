@@ -1,0 +1,3 @@
+The function priority_tag in /app/flaky/tags.py is supposed to return the highest-priority tag present in a
+set of tags, but its test behaves inconsistently — passing on some runs and failing on others. Fix
+priority_tag so it RELIABLY returns the correct highest-priority tag on every run.

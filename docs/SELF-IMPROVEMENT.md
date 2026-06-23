@@ -25,7 +25,10 @@ the frontier for free and the accumulated library transfers. "Far" = *maximally 
 model you give it, self-extending its reliable reach across its experience, forever cheaper* — a moving
 ceiling pinned to the model frontier, not a fixed wall.
 
-## Reasoning-injection — the lever that moves the ceiling (CORE, default-on)
+## Reasoning-injection — MEASURED (strategy task)
+Injecting a recalled APPROACH (not a fact) lifts a strategy task the bare 4B fumbles: bare 0/3 → 3/3 (flaky-priority). So a small model DOES reason better when handed a relevant approach — but the DELIVERY matters: the **system-note beats the `<think>`-hijack** in the grammar backend (note 3/3 vs hijack 1/3 even on a strategy task; on a fact task 3/3 vs 0/3). The hijack's 'owns the reasoning' edge needs the reason organ's single-phase ACTION-extraction path, not the two-phase grammar bolt-on. Net: reasoning-injection is real and works (via note); the think-prefill is a separate mechanism with a narrower home.
+
+## Reasoning-injection — the lever that moves the ceiling (CORE)
 "Well-fed, not smarter" is INCOMPLETE. Besides knowledge-injection (facts → system note), the substrate
 does **reasoning-injection**: recall a relevant **reasoning trace** → inject it as an **unclosed `<think>`
 prefill** so the model OWNS and continues it (the Nanbeige retrieval-hijack; `frontends/backend/app.py`

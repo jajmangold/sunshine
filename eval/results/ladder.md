@@ -41,3 +41,24 @@ reasoning/strategy turns (its home is the reason organ's single-phase ACTION-ext
 tool-calls and open-think are architecturally in tension; the two-phase split loses the steer). The proper
 reasoning-injection win (steering a strategy the model fumbles) is still UNMEASURED — needs a strategy task,
 not a fact task. The ablation caught my own wrong default (hijack-for-everything) — methodology working.
+
+## Reasoning-injection — the STRATEGY-task measurement (the number I owed)
+flaky-priority: a non-obvious strategy task (bug = set-iteration order → flaky test; HIDDEN multi-seed
+verifier so hardcoding the visible test fails). Same recalled APPROACH (an approach, not a fact), two
+delivery channels, bare control:
+
+| channel | solved | median tokens |
+|---|---|---|
+| bare | **0/3** | 89 |
+| approach → system NOTE | **3/3** | 204 |
+| approach → `<think>` HIJACK | **1/3** | 526 |
+
+**THE ANSWER:** (1) Injecting the recalled APPROACH genuinely lifts a strategy task the bare 4B fumbles —
+**0/3 → 3/3** via the note. So reasoning/approach IS injected effectively and "well-fed not smarter" was
+wrong: a recalled approach makes it solve things it can't solo. (2) BUT the think-prefill HIJACK
+MECHANISM underperforms the note even here (1/3 vs 3/3, 2.5× tokens). Across BOTH a fact task and a
+strategy task, in the grammar-tool-call backend the **system-note beats the think-prefill**. The
+hijack's theoretical "model owns the reasoning" advantage does NOT survive the two-phase grammar split;
+its proven home is the reason organ's SINGLE-phase ACTION-extraction path (where it was validated on
+Nanbeige). So: the faithful backend injects reasoning via the NOTE channel (works); the think-prefill is a
+different mechanism that needs a non-grammar single-phase path. Right mechanism, right architecture.
