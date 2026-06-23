@@ -68,13 +68,14 @@ theory this confirms.
 Hand it any repo + module + test selector; it **auto-discovers** stubbed functions (those raising
 `NotImplementedError`), builds focused context automatically (imports + module-level constants), and runs
 best-of-N + verifier-select + a repair round per target. Proven to generalize beyond the two tuned functions:
-**6 auto-discovered functions** (camelize/dasherize/parameterize/titleize/pluralize/singularize), 0 → 77
-passing, with best-of-8 beating best-of-1 on most (dasherize 0→4, parameterize 0→12, pluralize 0→17,
-singularize 7→37). `titleize` stayed 0 — `p`-too-small (the honest tail; needs higher N).
+**6 auto-discovered functions** (camelize/dasherize/parameterize/titleize/pluralize/singularize), 0 → **149
+passing** (`SCALE_CONC=3`), best-of-8 beating best-of-1 across the board (pluralize 0→117, titleize 0→11,
+singularize 7→9, dasherize 4, camelize 7). One-shot through a harness gets ~0 on a 6-function stub.
 
-### Architecture finding: best-of-N needs parallel CAPACITY, not one model
+### Architecture finding: best-of-N needs parallel CAPACITY, not one model — MEASURED
 Naive 6-wide parallel generation **saturated the single 4B** (max-num-seqs 4 → 12 s/gen, timeouts killing
-candidates → reduced effective N → missed the rare perfect: pluralize scored 17 vs 167 in the un-contended
-serial run). Bounded concurrency to the model's headroom (`SCALE_CONC=3`) helps, but the right substrate is
-**multiple model instances or the 0.8B worker swarm (≈2000 tok/s batched)** generating candidates in
-parallel. The lesson: *spend cheap parallel capacity to sample the tail* — and you need real capacity to do it.
+candidates → reduced effective N → **total 77**, pluralize stuck at 17). Just bounding concurrency to the
+model's headroom (`SCALE_CONC=3`) **nearly doubled it: 77 → 149** (pluralize 17 → 117). The saturation *was*
+the degradation. The right substrate for real best-of-N is **multiple model instances or the 0.8B worker
+swarm (≈2000 tok/s batched)** generating candidates in parallel. The lesson: *spend cheap parallel capacity
+to sample the tail — and you need real capacity (not one contended model) to do it.*
