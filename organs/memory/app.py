@@ -129,6 +129,7 @@ class RecallReq(BaseModel):
     k: int = 5
     min_sim: float = 0.0
     rerank: bool = False
+    where: Optional[dict] = None        # faceted: meta facet -> required value (substring, case-insensitive)
 
 
 class WriteReq(BaseModel):
@@ -147,6 +148,21 @@ def health(): return {"status": "ok", "namespaces": {n: len(v["f"]) for n, v in 
 def namespaces(): return {n: len(v["f"]) for n, v in NS.items()}
 
 
+def _meta_match(meta, where):
+    """All facets must match. List meta (e.g. files) matches if any element contains the value;
+    scalar meta matches by case-insensitive substring (so error/log signatures can be partial)."""
+    meta = meta or {}
+    for fk, fv in where.items():
+        mv = meta.get(fk)
+        fv = str(fv).lower()
+        if isinstance(mv, (list, tuple)):
+            if not any(fv in str(x).lower() for x in mv):
+                return False
+        elif fv not in str(mv or "").lower():
+            return False
+    return True
+
+
 @app.post("/recall")
 def recall(r: RecallReq):
     q = embed(r.q); nss = r.ns if isinstance(r.ns, list) else [r.ns]
@@ -154,7 +170,12 @@ def recall(r: RecallReq):
     for ns in nss:
         if ns not in NS or len(NS[ns]["f"]) == 0:
             continue
-        e = est(ns, q); order = np.argsort(-e)[:r.k]
+        e = est(ns, q)
+        if r.where:                                  # faceted gate: mask entries whose meta doesn't match
+            metas = NS[ns]["metas"]
+            keep = np.array([_meta_match(metas[i], r.where) for i in range(len(e))], dtype=bool)
+            e = np.where(keep, e, -1e9)
+        order = np.argsort(-e)[:r.k]
         for i in order:
             i = int(i)
             if float(e[i]) < r.min_sim:

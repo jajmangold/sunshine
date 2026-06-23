@@ -94,5 +94,6 @@ services:
       MAIN_URL: "http://127.0.0.1:8072/v1/chat/completions"
       MAIN_MODEL: "qwen3.5-4b"
       MODEL_ID: "sunshine"
-      SUN_REASON_NS: "rztest"
+      SUN_REASON_NS: "swe-faceted,agent-traces,recipes"
+      SUN_RECALL_MINSIM: "0.62"
     command: ["uvicorn","app:app","--host","0.0.0.0","--port","8073"]

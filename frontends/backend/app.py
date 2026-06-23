@@ -9,6 +9,7 @@ later as an appended system note — invisible to the harness.
   POST /v1/chat/completions   (OpenAI)        POST /v1/messages   (Anthropic)
   GET  /v1/models                             GET  /health
 """
+import re
 import os, json, time, uuid, urllib.request
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -32,6 +33,7 @@ AGENT_PREAMBLE = ("You are an autonomous coding agent. You are BLIND to this env
 
 MEMORY_URL = os.getenv("MEMORY_URL", "http://127.0.0.1:8090")
 REASON_NS = os.getenv("SUN_REASON_NS", "agent-traces,recipes,eval-lessons").split(",")
+RECALL_MINSIM = float(os.getenv("SUN_RECALL_MINSIM", "0.62"))
 
 
 def _call(messages, grammar=None, schema=None, max_tokens=1024, thinking=False, temp=0.3, prefill=None):
@@ -53,13 +55,35 @@ def _call(messages, grammar=None, schema=None, max_tokens=1024, thinking=False, 
     return txt, d.get("usage", {})
 
 
-def recall_reasoning(query, k=2, min_sim=0.62):
-    """Retrieve relevant REASONING TRACES/approaches (not just facts) to hijack the model's thought."""
-    try:
+_ERR_RE = re.compile(r'\b([A-Z][A-Za-z]*(?:Error|Exception|Warning))\b')
+
+
+def _query_facets(query):
+    """Extract high-precision retrieval facets from the task/error text — the way an engineer searches:
+    by error class, then language. Faceting on these rescues same-error-class strategies the single
+    semantic vector buries (it ranks a wrong-class higher-cosine hit above the right-class one)."""
+    where = {}
+    m = _ERR_RE.search(query)
+    if m:
+        where["error_class"] = m.group(1)
+    return where or None
+
+
+def recall_reasoning(query, k=2, min_sim=None):
+    """Retrieve relevant REASONING TRACES/approaches (not just facts) to hijack the model's thought.
+    If the task carries an error signature, FACET on it (where=) so we get same-class troubleshooting."""
+    def _hit(body):
         r = urllib.request.Request(MEMORY_URL.rstrip("/") + "/recall",
-            data=json.dumps({"ns": REASON_NS, "q": query[-1500:],
-                             "k": k, "min_sim": min_sim}).encode(), headers={"Content-Type": "application/json"})
-        return [h["value"] for h in json.loads(urllib.request.urlopen(r, timeout=12).read()).get("hits", [])]
+            data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+        return json.loads(urllib.request.urlopen(r, timeout=12).read()).get("hits", [])
+    try:
+        gate = (min_sim if min_sim is not None else RECALL_MINSIM)
+        where = _query_facets(query)
+        if where:                                     # faceted first: same-error-class beats higher-cosine wrong-class
+            hits = _hit({"ns": REASON_NS, "q": query[-1500:], "k": k, "min_sim": 0.0, "where": where})
+            if hits:                                  # facet hit -> precise; fall through to semantic only if the ns has no facets
+                return [h["value"] for h in hits]
+        return [h["value"] for h in _hit({"ns": REASON_NS, "q": query[-1500:], "k": k, "min_sim": gate})]
     except Exception:
         return []
 
