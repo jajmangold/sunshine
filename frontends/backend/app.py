@@ -55,35 +55,55 @@ def _call(messages, grammar=None, schema=None, max_tokens=1024, thinking=False, 
     return txt, d.get("usage", {})
 
 
-_ERR_RE = re.compile(r'\b([A-Z][A-Za-z]*(?:Error|Exception|Warning))\b')
+_ERR_RE = re.compile(r'\b([A-Z][A-Za-z]*(?:Error|Exception|Warning|Fault))\b')
+_FRAMEWORKS = ["pytest", "unittest", "django", "flask", "fastapi", "numpy", "pandas", "pytorch", "torch",
+    "tensorflow", "keras", "sqlalchemy", "sqlite", "postgresql", "postgres", "mysql", "redis", "mongodb",
+    "nginx", "apache", "docker", "kubernetes", "react", "vue", "angular", "webpack", "flake8", "mypy",
+    "ruff", "setuptools", "conda", "poetry", "cmake", "cargo", "maven", "gradle", "spring", "ffmpeg",
+    "opencv", "scipy", "matplotlib", "requests", "aiohttp", "celery", "gunicorn", "uvicorn", "npm", "git"]
+_SYMPTOMS = ["command not found", "permission denied", "no such file", "connection refused", "out of memory",
+    "segmentation fault", "no module named", "module not found", "cannot import", "is not a database",
+    "undefined reference", "syntax error", "address already in use", "timed out", "disk full", "broken pipe"]
+_LANGS = {"python": [r"\bpython\b", r"\.py\b", r"\bpip\b", r"\bpytest\b"], "javascript": [r"\bnode(js)?\b", r"\bnpm\b", r"\.js\b"],
+    "typescript": [r"\btypescript\b", r"\.ts\b"], "java": [r"\bjava\b", r"\.java\b", r"\bmaven\b", r"\bgradle\b"],
+    "rust": [r"\brust\b", r"\bcargo\b", r"\.rs\b"], "go": [r"\bgolang\b", r"\.go\b"], "bash": [r"\bbash\b", r"\.sh\b"], "sql": [r"\bsqlite\b", r"\bsql\b"]}
 
 
 def _query_facets(query):
-    """Extract high-precision retrieval facets from the task/error text — the way an engineer searches:
-    by error class, then language. Faceting on these rescues same-error-class strategies the single
-    semantic vector buries (it ranks a wrong-class higher-cosine hit above the right-class one)."""
-    where = {}
+    """Extract retrieval facets (error class, framework, log symptom, language) — the way an engineer
+    searches: by error message + tag. Returns facets in PRIORITY order (most discriminative first)."""
+    t = query.lower(); out = []
     m = _ERR_RE.search(query)
     if m:
-        where["error_class"] = m.group(1)
-    return where or None
+        out.append(("error_class", m.group(1)))
+    for sym in _SYMPTOMS:
+        if sym in t:
+            out.append(("symptom", sym)); break
+    for fw in _FRAMEWORKS:
+        if re.search(r'\b' + re.escape(fw) + r'\b', t):
+            out.append(("framework", fw)); break
+    for lang, kws in _LANGS.items():
+        if any(re.search(k, t) for k in kws):
+            out.append(("lang", lang)); break
+    return out
 
 
 def recall_reasoning(query, k=2, min_sim=None):
-    """Retrieve relevant REASONING TRACES/approaches (not just facts) to hijack the model's thought.
-    If the task carries an error signature, FACET on it (where=) so we get same-class troubleshooting."""
+    """Retrieve relevant REASONING TRACES/approaches. CASCADE: facet by the most discriminative signals,
+    relaxing until hits return, with ColBERT rerank within the facet-narrowed pool; semantic as the floor."""
     def _hit(body):
         r = urllib.request.Request(MEMORY_URL.rstrip("/") + "/recall",
             data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
-        return json.loads(urllib.request.urlopen(r, timeout=12).read()).get("hits", [])
+        return json.loads(urllib.request.urlopen(r, timeout=15).read()).get("hits", [])
     try:
         gate = (min_sim if min_sim is not None else RECALL_MINSIM)
-        where = _query_facets(query)
-        if where:                                     # faceted first: same-error-class beats higher-cosine wrong-class
-            hits = _hit({"ns": REASON_NS, "q": query[-1500:], "k": k, "min_sim": 0.0, "where": where})
-            if hits:                                  # facet hit -> precise; fall through to semantic only if the ns has no facets
+        facets = _query_facets(query)
+        for j in range(len(facets), 0, -1):           # try {all facets} -> drop weakest -> ... -> {top facet}
+            where = dict(facets[:j])
+            hits = _hit({"ns": REASON_NS, "q": query[-1500:], "k": k, "min_sim": 0.0, "where": where, "rerank": True})
+            if hits:                                   # facet matched -> same-class, ColBERT-ranked, transferable
                 return [h["value"] for h in hits]
-        return [h["value"] for h in _hit({"ns": REASON_NS, "q": query[-1500:], "k": k, "min_sim": gate})]
+        return [h["value"] for h in _hit({"ns": REASON_NS, "q": query[-1500:], "k": k, "min_sim": gate, "rerank": True})]
     except Exception:
         return []
 

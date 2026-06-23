@@ -99,10 +99,17 @@ def load_legacy():
             vc = "solution" if "solution" in cols else (cols[2] if len(cols) > 2 else kc)
             rows = con.execute(f"SELECT {kc}, {vc}, * FROM read_parquet('{pq}') ORDER BY rid").fetchall() \
                 if "rid" in cols else con.execute(f"SELECT {kc}, {vc} FROM read_parquet('{pq}')").fetchall()
+            metas = [{} for _ in rows]
+            side = f"{DATA}/{ns}.facets.json"                  # restart-safe backfilled facets overlay
+            if os.path.exists(side):
+                saved = json.load(open(side))
+                if len(saved) == len(metas):
+                    metas = saved
             NS[ns] = {"bits": z["bits"].astype("uint8"), "f": z["f"].astype("float32"),
                       "keys": [r[0] or "" for r in rows], "values": [r[1] or "" for r in rows],
-                      "metas": [{} for _ in rows], "ro": True}
-            print(f"[memory] legacy ns '{ns}': {len(NS[ns]['f'])} entries", flush=True)
+                      "metas": metas, "ro": True}
+            faceted = sum(1 for m in metas if m)
+            print(f"[memory] legacy ns '{ns}': {len(NS[ns]['f'])} entries ({faceted} faceted)", flush=True)
         except Exception as e:
             print(f"[memory] skip {npz}: {str(e)[:80]}", flush=True)
 
@@ -122,6 +129,40 @@ def persist(ns):
     json.dump({"keys": e["keys"], "values": e["values"], "metas": e["metas"]}, open(f"{DATA}/{ns}.json", "w"))
 
 
+import re as _re
+_ERR_RE = _re.compile(r'\b([A-Z][A-Za-z]*(?:Error|Exception|Warning|Fault))\b')
+_FRAMEWORKS = ["pytest", "unittest", "django", "flask", "fastapi", "numpy", "pandas", "pytorch", "torch",
+    "tensorflow", "keras", "sqlalchemy", "sqlite", "postgresql", "postgres", "mysql", "redis", "mongodb",
+    "nginx", "apache", "docker", "kubernetes", "react", "vue", "angular", "webpack", "flake8", "mypy",
+    "ruff", "setuptools", "conda", "poetry", "cmake", "cargo", "maven", "gradle", "spring", "ffmpeg",
+    "opencv", "scipy", "matplotlib", "requests", "aiohttp", "celery", "gunicorn", "uvicorn", "npm", "git"]
+_SYMPTOMS = ["command not found", "permission denied", "no such file", "connection refused", "out of memory",
+    "segmentation fault", "no module named", "module not found", "cannot import", "is not a database",
+    "undefined reference", "syntax error", "address already in use", "timed out", "disk full", "broken pipe"]
+_LANGS = {"python": [r"\bpython\b", r"\.py\b", r"\bpip\b", r"\bpytest\b"], "javascript": [r"\bnode(js)?\b", r"\bnpm\b", r"\.js\b"],
+    "typescript": [r"\btypescript\b", r"\.ts\b"], "java": [r"\bjava\b", r"\.java\b", r"\bmaven\b", r"\bgradle\b"],
+    "c": [r"\bgcc\b", r"\.c\b"], "cpp": [r"\bc\+\+\b", r"\.cpp\b", r"\.cc\b"], "rust": [r"\brust\b", r"\bcargo\b", r"\.rs\b"],
+    "go": [r"\bgolang\b", r"\.go\b"], "bash": [r"\bbash\b", r"shell script", r"\.sh\b"], "sql": [r"\bsqlite\b", r"\bselect \b", r"\bsql\b"]}
+
+
+def extract_facets(text):
+    """High-precision retrieval facets the way an engineer searches: error class, framework, log symptom, language."""
+    t = (text or "").lower(); f = {}
+    m = _ERR_RE.search(text or "")
+    if m:
+        f["error_class"] = m.group(1)
+    for fw in _FRAMEWORKS:
+        if _re.search(r'\b' + _re.escape(fw) + r'\b', t):
+            f["framework"] = fw; break
+    for sym in _SYMPTOMS:
+        if sym in t:
+            f["symptom"] = sym; break
+    for lang, kws in _LANGS.items():
+        if any(_re.search(k, t) for k in kws):
+            f["lang"] = lang; break
+    return f
+
+
 # ---------------- API ----------------
 class RecallReq(BaseModel):
     ns: Union[str, List[str]]
@@ -129,6 +170,7 @@ class RecallReq(BaseModel):
     k: int = 5
     min_sim: float = 0.0
     rerank: bool = False
+    pool: int = 24                      # candidate pool size before ColBERT rerank
     where: Optional[dict] = None        # faceted: meta facet -> required value (substring, case-insensitive)
 
 
@@ -146,6 +188,30 @@ def health(): return {"status": "ok", "namespaces": {n: len(v["f"]) for n, v in 
 
 @app.get("/namespaces")
 def namespaces(): return {n: len(v["f"]) for n, v in NS.items()}
+
+
+class BackfillReq(BaseModel):
+    ns: str
+
+
+@app.post("/backfill_facets")
+def backfill_facets(b: BackfillReq):
+    """Extract facets (error_class/framework/symptom/lang) from key+value over an existing namespace and
+    overlay them onto metas. Restart-safe: writes a sidecar (legacy ns) or persists (native ns)."""
+    if b.ns not in NS:
+        return {"ok": False, "error": "unknown ns"}
+    e = NS[b.ns]
+    metas = e["metas"]; n = len(e["keys"]); faceted = 0
+    with _lock:
+        for i in range(n):
+            f = extract_facets((e["keys"][i] or "") + "  " + (e["values"][i] or ""))
+            if f:
+                metas[i] = {**(metas[i] or {}), **f}; faceted += 1
+        if e.get("ro"):                                       # legacy: sidecar overlay (texts/bits stay read-only)
+            json.dump(metas, open(f"{DATA}/{b.ns}.facets.json", "w"))
+        else:
+            persist(b.ns)
+    return {"ok": True, "ns": b.ns, "size": n, "faceted": faceted}
 
 
 def _meta_match(meta, where):
@@ -175,17 +241,18 @@ def recall(r: RecallReq):
             metas = NS[ns]["metas"]
             keep = np.array([_meta_match(metas[i], r.where) for i in range(len(e))], dtype=bool)
             e = np.where(keep, e, -1e9)
-        order = np.argsort(-e)[:r.k]
+        topn = r.pool if r.rerank else r.k           # rerank needs a candidate POOL, not just final-k
+        order = np.argsort(-e)[:topn]
         for i in order:
             i = int(i)
             if float(e[i]) < r.min_sim:
                 continue
             hits.append({"ns": ns, "key": NS[ns]["keys"][i], "value": NS[ns]["values"][i],
                          "meta": NS[ns]["metas"][i], "score": round(float(e[i]), 3)})
-    hits.sort(key=lambda h: -h["score"]); hits = hits[:r.k]
-    if r.rerank and len(hits) > 1:
-        hits = colbert(r.q, hits)
-    return {"hits": hits}
+    hits.sort(key=lambda h: -h["score"])
+    if r.rerank and len(hits) > 1:                   # ColBERT late-interaction reorders WITHIN the facet-narrowed pool
+        hits = colbert(r.q, hits[:r.pool])
+    return {"hits": hits[:r.k]}
 
 
 def colbert(query, hits):
