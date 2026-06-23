@@ -63,3 +63,18 @@ product lever** is wiring **piece-level best-of-N (parallel, thinking-off / work
 decomposition + the verifier** into the agent loop — the thing that turns this `/tmp`-grade demo into a
 frontier-grade, frontier-price number on a real benchmark. See `SELF-IMPROVEMENT.md` for the amplification
 theory this confirms.
+
+## Generalized: `eval/verified_solve.py` (task-agnostic)
+Hand it any repo + module + test selector; it **auto-discovers** stubbed functions (those raising
+`NotImplementedError`), builds focused context automatically (imports + module-level constants), and runs
+best-of-N + verifier-select + a repair round per target. Proven to generalize beyond the two tuned functions:
+**6 auto-discovered functions** (camelize/dasherize/parameterize/titleize/pluralize/singularize), 0 → 77
+passing, with best-of-8 beating best-of-1 on most (dasherize 0→4, parameterize 0→12, pluralize 0→17,
+singularize 7→37). `titleize` stayed 0 — `p`-too-small (the honest tail; needs higher N).
+
+### Architecture finding: best-of-N needs parallel CAPACITY, not one model
+Naive 6-wide parallel generation **saturated the single 4B** (max-num-seqs 4 → 12 s/gen, timeouts killing
+candidates → reduced effective N → missed the rare perfect: pluralize scored 17 vs 167 in the un-contended
+serial run). Bounded concurrency to the model's headroom (`SCALE_CONC=3`) helps, but the right substrate is
+**multiple model instances or the 0.8B worker swarm (≈2000 tok/s batched)** generating candidates in
+parallel. The lesson: *spend cheap parallel capacity to sample the tail* — and you need real capacity to do it.
