@@ -36,9 +36,9 @@ REASON_NS = os.getenv("SUN_REASON_NS", "agent-traces,recipes,eval-lessons").spli
 RECALL_MINSIM = float(os.getenv("SUN_RECALL_MINSIM", "0.62"))
 
 
-def _call(messages, grammar=None, schema=None, max_tokens=1024, thinking=False, temp=0.3, prefill=None):
+def _call(messages, grammar=None, schema=None, max_tokens=1024, thinking=False, temp=0.3, prefill=None, freq_penalty=0.0):
     body = {"model": MAIN_MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": temp,
-            "top_p": 0.9, "chat_template_kwargs": {"enable_thinking": thinking}}
+            "top_p": 0.9, "frequency_penalty": freq_penalty, "chat_template_kwargs": {"enable_thinking": thinking}}
     if grammar:
         body["structured_outputs"] = {"grammar": grammar}
     elif schema:
@@ -200,6 +200,29 @@ def _sig(name, args):
         return name + str(args)
 
 
+def _undegen(args, max_len=3000):
+    """Defang degenerate generation. Real-world eval found the model emit a command with a clause repeated
+    67× (`pytest | tail -50 && pytest | tail -100 && ...` — repeat-with-increment). Collapse a string arg
+    whose clauses are mostly normalized-duplicates, and cap length. Targeted: only fires on heavy repetition."""
+    if not isinstance(args, dict):
+        return args
+    out = {}
+    for k, v in args.items():
+        if isinstance(v, str) and len(v) > 200:
+            parts = re.split(r'\s*&&\s*|\s*;\s*|\n', v)
+            if len(parts) > 4:
+                seen = set(); uniq = []
+                for p in parts:
+                    norm = re.sub(r'\d+', 'N', p.strip())
+                    if norm and norm not in seen:
+                        seen.add(norm); uniq.append(p.strip())
+                if len(uniq) < len(parts) * 0.6:           # >40% of clauses were repeats -> degenerate
+                    v = " && ".join(uniq)
+            v = v[:max_len]
+        out[k] = v
+    return out
+
+
 def _recurring_error(msgs, window=5, thresh=2):
     """SEMANTIC loop signal the exact-sig detector misses: the agent's ACTIONS vary but it keeps hitting
     the SAME error (a doomed frame). Look at recent tool results; if one error signature recurs, it's stuck."""
@@ -259,7 +282,7 @@ def turn(msgs, tools, recent_sigs=(), loop_detect=False, reason_traces=None, act
                 "IGNORE the suggestion and fix the ACTUAL cause — do not force an unrelated fix. ")
     nudge = {"role": "user", "content": hint + 'Take your next action: call a tool as {"tool":<name>,"args":{...}} '
              'or answer as {"respond":"..."}.'}
-    txt, u = _call(msgs + [nudge], schema=schema, max_tokens=1500, temp=0.2)
+    txt, u = _call(msgs + [nudge], schema=schema, max_tokens=1500, temp=0.2, freq_penalty=0.3)  # discourage repeat-with-increment
     tok += u.get("completion_tokens", 0)
     try:
         obj = json.loads(txt)
@@ -285,11 +308,11 @@ def turn(msgs, tools, recent_sigs=(), loop_detect=False, reason_traces=None, act
             try:
                 o2 = json.loads(txt2)
                 if "tool" in o2 and o2["tool"] in names:
-                    return ("tool", o2["tool"], o2.get("args", {})), tok
+                    return ("tool", o2["tool"], _undegen(o2.get("args", {}))), tok
                 return ("text", o2.get("respond", "")), tok
             except Exception:
                 pass
-        return ("tool", name, args), tok
+        return ("tool", name, _undegen(args)), tok
     return ("text", obj.get("respond", txt)), tok
 
 
