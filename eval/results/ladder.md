@@ -62,3 +62,19 @@ hijack's theoretical "model owns the reasoning" advantage does NOT survive the t
 its proven home is the reason organ's SINGLE-phase ACTION-extraction path (where it was validated on
 Nanbeige). So: the faithful backend injects reasoning via the NOTE channel (works); the think-prefill is a
 different mechanism that needs a non-grammar single-phase path. Right mechanism, right architecture.
+
+## Rung-5: verify / best-of-N — the generator + cheaper-verifier SPINE (the deepest pattern)
+shipping-bug (moderate task, single-attempt p=0.5), cumulative over repo-map. The VERIFIER (hidden test)
+selects the winner among attempts; stop at first verified success (eval/bestof.py):
+
+| | solved | note |
+|---|---|---|
+| single attempt | **4/8 = 50%** | unreliable |
+| **verify-guided best-of-3** | **5/5 = 100%** | median 2 attempts-to-success |
+
+**This is the spine of the whole thesis** ("verifying is cheaper than generating"): N tries + a cheap
+checker converts UNRELIABLE -> RELIABLE. The verifier is what makes test-time compute pay off — without it
+you can't pick the right attempt. Five rungs now proven: loop-detect 2/6->5/6, repo-map 0/3->2/3,
+recall-facts 0/3->3/3, recall-approaches 0/3->3/3, verify/best-of-N 50%->100%. The remaining lever is
+ADAPTIVE compute (spend the N/verify budget only on hard turns — gate by difficulty), the optimization once
+the rungs exist.
