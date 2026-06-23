@@ -17,15 +17,17 @@ import urllib.request, json, re, ast, subprocess, os, sys
 from concurrent.futures import ThreadPoolExecutor
 
 MAIN = os.getenv("SUN_MAIN_URL", "http://127.0.0.1:8072/v1/chat/completions")
+POOL = os.getenv("SUN_MAIN_POOL", MAIN).split(",")  # instance pool for real parallel best-of-N capacity
 MODEL = os.getenv("SUN_MAIN_MODEL", "qwen3.5-4b")
 N = int(os.getenv("SCALE_N", "8"))
 
 
-def gen(prompt, temp):
+def gen(prompt, temp, idx=0):
+    url = POOL[idx % len(POOL)].strip()                       # fan candidates across the instance pool
     body = {"model": MODEL, "messages": [{"role": "user", "content": prompt}], "max_tokens": 700,
             "temperature": temp, "top_p": 0.95, "chat_template_kwargs": {"enable_thinking": False}}
-    r = urllib.request.Request(MAIN, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
-    return json.loads(urllib.request.urlopen(r, timeout=60).read())["choices"][0]["message"]["content"] or ""
+    r = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+    return json.loads(urllib.request.urlopen(r, timeout=90).read())["choices"][0]["message"]["content"] or ""
 
 
 def discover_stubs(file):
@@ -96,8 +98,8 @@ def solve(file, repo, name, ctx, repair_rounds=1):
     best_src, best, first = stub, -1, 0
     prompt = base
     for rnd in range(repair_rounds + 1):
-        with ThreadPoolExecutor(int(os.getenv("SCALE_CONC","3"))) as ex:    # bounded concurrency (fit max-num-seqs; over-parallel saturates one model)
-            cands = list(ex.map(lambda t: extract(gen(prompt, t), name), [0.2 + 0.08 * i for i in range(N)]))
+        with ThreadPoolExecutor(int(os.getenv("SCALE_CONC", str(3*len(POOL))))) as ex:  # pool-aware: fan across instances
+            cands = list(ex.map(lambda it: extract(gen(prompt, 0.2 + 0.08 * it[0], it[0]), name), list(enumerate(range(N)))))
         round_scores = []
         for fn in cands:                                                # serial verify (shared file)
             apply(file, name, stub)

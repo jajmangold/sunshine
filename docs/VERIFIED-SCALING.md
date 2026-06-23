@@ -79,3 +79,20 @@ model's headroom (`SCALE_CONC=3`) **nearly doubled it: 77 → 149** (pluralize 1
 the degradation. The right substrate for real best-of-N is **multiple model instances or the 0.8B worker
 swarm (≈2000 tok/s batched)** generating candidates in parallel. The lesson: *spend cheap parallel capacity
 to sample the tail — and you need real capacity (not one contended model) to do it.*
+
+### Parallel capacity proven: a 3-instance 4B pool + higher N kills the variance
+Stood up a pool of three 4B instances (replicating sun-main on free GPUs) and added round-robin to
+`verified_solve.py` (`SUN_MAIN_POOL=url1,url2,url3`, concurrency auto-scales to `3×pool`). The lesson the
+numbers teach:
+
+| run | N | total | note |
+|---|---|---|---|
+| single instance, lucky | 8 | 149 | caught the ~1/8 perfect |
+| pooled, unlucky | 8 | **34** | *same N*, missed the perfect → outcome variance is real |
+| **pooled, higher N** | **18** | **148** (3m31s) | reliably catches it → variance killed |
+
+best-of-N at fixed N is *itself* high-variance (P(miss a `p≈⅛` perfect) ≈ `(1−⅛)^N`: 26% at N=8, **9% at
+N=18**). The pool's job is **not speed — it's affordable higher N**: parallel capacity lets you push N up
+until the rare perfect is reliably sampled, turning a swingy 34–149 into a stable ~148. `pluralize` alone
+went 14→109 from N=8→18. The `p`-too-small tail (`singularize`, `titleize`) is unmoved by N and needs the
+repair round / a stronger model — the boundary holds.
