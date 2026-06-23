@@ -252,9 +252,11 @@ def turn(msgs, tools, recent_sigs=(), loop_detect=False, reason_traces=None, act
     names = [_name_of(t) for t in tools]
     hint = ""
     if action_hint:                                          # LEVER #2: recalled fix AT the action point, not buried in system
-        hint = ("Known fix(es) from past experience relevant to the CURRENT situation:\n"
+        hint = ("A possibly-relevant fix from past experience:\n"
                 + "\n".join("• " + t.strip() for t in action_hint[:2])
-                + "\nIf one applies to the error/task at hand, APPLY IT in your next action instead of improvising. ")
+                + "\nFIRST check it actually fits THIS specific case (look at the code/files/error). If it fits, "
+                "apply it directly. If the real cause is different (e.g. a local file/typo, not a missing package), "
+                "IGNORE the suggestion and fix the ACTUAL cause — do not force an unrelated fix. ")
     nudge = {"role": "user", "content": hint + 'Take your next action: call a tool as {"tool":<name>,"args":{...}} '
              'or answer as {"respond":"..."}.'}
     txt, u = _call(msgs + [nudge], schema=schema, max_tokens=1500, temp=0.2)

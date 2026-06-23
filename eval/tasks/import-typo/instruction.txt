@@ -1,0 +1,1 @@
+Run app.py so it writes /app/result.txt. It currently fails with an error — diagnose the real cause and fix it, then run it successfully.
