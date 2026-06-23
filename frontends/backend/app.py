@@ -70,6 +70,7 @@ _LANGS = {"python": [r"\bpython\b", r"\.py\b", r"\bpip\b", r"\bpytest\b"], "java
 
 
 FACET_ON = os.getenv("SUN_FACET", "on") == "on"
+SEMANTIC_LD = os.getenv("SUN_SEMANTIC_LD", "on") == "on"   # semantic (recurring-error) loop-detect + thinking re-frame
 
 
 def _query_facets(query):
@@ -198,6 +199,31 @@ def _sig(name, args):
         return name + str(args)
 
 
+def _recurring_error(msgs, window=5, thresh=2):
+    """SEMANTIC loop signal the exact-sig detector misses: the agent's ACTIONS vary but it keeps hitting
+    the SAME error (a doomed frame). Look at recent tool results; if one error signature recurs, it's stuck."""
+    results = [m["content"] for m in msgs if m.get("role") == "user"
+               and isinstance(m.get("content"), str) and m["content"].startswith("[tool result]")][-window:]
+    if len(results) < thresh:
+        return None
+    counts = {}
+    for r in results:
+        sig = None
+        m = _ERR_RE.search(r)                                # an exception class, or a known log symptom
+        if m:
+            sig = m.group(1)
+        else:
+            for s in _SYMPTOMS:
+                if s in r.lower():
+                    sig = s; break
+        if sig:
+            counts[sig] = counts.get(sig, 0) + 1
+    if not counts:
+        return None
+    top, n = max(counts.items(), key=lambda kv: kv[1])
+    return top if (n >= thresh and (top in results[-1] or top in results[-1].lower())) else None
+
+
 def gen_text(msgs, thinking=True):
     return _call(msgs, max_tokens=1500, thinking=thinking)
 
@@ -233,10 +259,20 @@ def turn(msgs, tools, recent_sigs=(), loop_detect=False, reason_traces=None):
         return ("text", txt), tok
     if "tool" in obj and obj["tool"] in names:
         name, args = obj["tool"], obj.get("args", {})
-        if loop_detect and _sig(name, args) in recent_sigs:           # RUNG: escape repeats
-            anti = {"role": "user", "content": f"You ALREADY ran {name} with those args and it did not help. "
-                    "Do something genuinely DIFFERENT — diagnose why, or try another approach."}
-            txt2, u2 = _call(msgs + [anti, nudge], schema=schema, max_tokens=1500, temp=0.5, thinking=False)
+        recurring = _recurring_error(msgs) if (loop_detect and SEMANTIC_LD) else None
+        repeated = loop_detect and _sig(name, args) in recent_sigs
+        if repeated or recurring:                                      # RUNG: escape repeats AND strategic loops
+            why = (f"you keep hitting the same error ('{recurring}') — your whole APPROACH is a dead end"
+                   if recurring else f"you already ran {name} with those args and it did not help")
+            reframe = {"role": "user", "content":
+                f"STOP. You are stuck in a loop: {why}. Reconsider from scratch before acting: "
+                "(1) Is your current assumption even POSSIBLE, or a dead end (e.g. you can't reverse a hash)? "
+                "(2) What do you actually KNOW — including any known fix, hint, or value you were given earlier? "
+                "(3) Pick a genuinely DIFFERENT action based on that. Think it through."}
+            plan, up = _call(msgs + [reframe], max_tokens=400, thinking=True)   # frame-check: deliberate to break the anchor
+            tok += up.get("completion_tokens", 0)
+            ctx = {"role": "user", "content": "[reconsidered] " + plan.strip()[-500:]} if plan.strip() else reframe
+            txt2, u2 = _call(msgs + [reframe, ctx, nudge], schema=schema, max_tokens=1500, temp=0.5, thinking=False)
             tok += u2.get("completion_tokens", 0)
             try:
                 o2 = json.loads(txt2)

@@ -96,5 +96,6 @@ services:
       MODEL_ID: "sunshine"
       SUN_REASON_NS: "swe-faceted,agent-traces,recipes"
       SUN_FACET: "on"
+      SUN_SEMANTIC_LD: "off"
       SUN_RECALL_MINSIM: "0.62"
     command: ["uvicorn","app:app","--host","0.0.0.0","--port","8073"]
