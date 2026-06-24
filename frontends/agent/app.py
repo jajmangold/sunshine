@@ -11,6 +11,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 KERNEL = os.getenv("KERNEL_URL", "http://127.0.0.1:8094")
 PORT = int(os.getenv("PORT", "8095"))
 EFFORT = os.getenv("AGENT_EFFORT", "terse")
+# ENVIRONMENT GROUNDING — the harness runs the agent INSIDE a tmux session in a Linux container. Small models
+# over-index on "you're in tmux" and derail into managing the session (kill-server/new-session loops, the
+# openssl failure). Anchor the env + force assumption-checking instead of guessing.
+ENV_NOTE = ("[Environment] You control a normal bash shell that is ALREADY running inside a tmux session in a "
+            "Linux container. The session is managed FOR you — NEVER run `tmux`, `screen`, `ssh`, or session/"
+            "server-management commands; just type the shell commands that accomplish the task. Before acting, "
+            "CHECK the real state instead of guessing: run `pwd`, `ls -la`, inspect the file's permissions/"
+            "contents, and confirm a tool exists — then issue the single command that actually moves the task "
+            "forward. If a script 'won't run', check its permissions (`ls -l`, `chmod +x`) before assuming syntax.")
 TIMEOUT = int(os.getenv("CMD_TIMEOUT_SEC", "20"))   # cap blocking waits (60s default wasted time on hangs)
 # commands that start something interactive/long-running -> don't block-wait the full timeout
 _NONBLOCK = ("./", "python -i", "vim ", "vi ", "nano ", "less ", "top", "htop", "nc ", "telnet ", "ssh ", "tail -f")
@@ -58,15 +67,16 @@ def handle(body):
     ts = task.split("The current terminal state is:")[-1] if "The current terminal state is:" in task else \
         (users[-1] if len(users) > 1 else "")
     obs_tail = ts.replace("New Terminal Output:", "").strip()[-1500:] or "fresh session"
+    grounded = ENV_NOTE + "\n\nTask: " + instr                       # anchor the execution environment
     recent = [c for c in _prior_commands(msgs)[-3:]]
     try:
-        r = _post(KERNEL + "/solve", {"task": instr, "context": obs_tail, "skill": "terminus", "effort": EFFORT})
+        r = _post(KERNEL + "/solve", {"task": grounded, "context": obs_tail, "skill": "terminus", "effort": EFFORT})
         cmd = (r.get("intent") or "").strip()
         tok = r.get("tokens", 0)
         if cmd and cmd.rstrip("\n") in [c.rstrip("\n") for c in recent]:   # LOOP -> escalate effort + anti-repeat
             nudge = (obs_tail + f"\n\nYou ALREADY ran `{cmd}` and it did NOT complete the task. Do NOT repeat "
                      "it or minor variants — diagnose why and try a genuinely DIFFERENT approach.")
-            r = _post(KERNEL + "/solve", {"task": instr, "context": nudge[-1800:], "skill": "terminus", "effort": "deep"})
+            r = _post(KERNEL + "/solve", {"task": grounded, "context": nudge[-1800:], "skill": "terminus", "effort": "deep"})
             cmd = (r.get("intent") or "").strip() or cmd
             tok += r.get("tokens", 0)
     except Exception:
@@ -78,7 +88,7 @@ def handle(body):
                  "Do NOT say done. Inspect the actual state (e.g. ls -la, check permissions/contents) and output the "
                  "single NEXT concrete shell command that makes real progress toward the requirement.")
         try:
-            r = _post(KERNEL + "/solve", {"task": instr, "context": nudge[-1800:], "skill": "terminus", "effort": "deep"})
+            r = _post(KERNEL + "/solve", {"task": grounded, "context": nudge[-1800:], "skill": "terminus", "effort": "deep"})
             c2 = (r.get("intent") or "").strip(); tok += r.get("tokens", 0)
             if c2 and not c2.upper().startswith("DONE") and c2.rstrip("\n") not in [c.rstrip("\n") for c in recent]:
                 cmd = c2
