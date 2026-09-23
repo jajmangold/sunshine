@@ -9,7 +9,7 @@ services:
     mem_limit: 4g
     volumes:
       - ./organs/memory/data:/data                                   # native (writable) namespaces
-      - /srv/nvme-data/containers/live/lm-stack/reason-engine/methods:/legacy:ro  # existing indexes (read)
+      - ${LEGACY_INDEXES_PATH:-./legacy-indexes}:/legacy:ro  # existing indexes (read)
     environment:
       EMBED_MODEL: "sentence-transformers/all-MiniLM-L6-v2"
       WORKER_URL: "http://127.0.0.1:8071/v1/chat/completions"        # validated Qwen3.5-0.8b worker (distill-on-write)
@@ -44,7 +44,7 @@ services:
     restart: unless-stopped
     network_mode: host                  # reach wasm-sandbox (172.30.0.2) + main :8072
     environment:
-      SANDBOX_URL: "http://172.30.0.2:8000/run"
+      SANDBOX_URL: "${SANDBOX_URL:-http://localhost:8000/run}"
       MAIN_URL: "http://127.0.0.1:8072/v1/chat/completions"
       MAIN_MODEL: "qwen3.5-4b"
     command: ["uvicorn","app:app","--host","0.0.0.0","--port","8093"]
