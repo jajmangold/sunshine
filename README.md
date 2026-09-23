@@ -20,14 +20,14 @@ flowchart LR
   L1 --> L2 --> L3
 
   L1 -.- L1D["Nothing raw reaches a reasoner.\nDistill before recall."]
-  L2 -.- L2D["Worker formats/judges (fast).\nMain model reasons (slow).\nGrammar-guaranteed output."]
+  L2 -.- L2D["Worker formats/judges (fast).\nMain model reasons (slow).\nArgmax scoring or grammar output."]
   L3 -.- L3D["Grammar always.\nWASM / test / critic / VLM when available.\nBest-of-N replaces guessing."]
 ```
 
 | Law | Rule |
 |---|---|
 | **Clean Context** | Nothing raw reaches a reasoner. Web pages, traces, images, long docs are distilled into clean, generic form before recall. |
-| **Right Model for the Layer** | The worker routes / distills / formats / judges (never reasons). The main model reasons (never hand-formats). Structured output is grammar-constrained. |
+| **Right Model for the Layer** | The worker routes / distills / formats / judges (never reasons). The main model reasons (never hand-formats). Structured output via argmax scoring or grammar constraint. |
 | **Verify, Don't Trust** | Every output is checked by a cheap verifier: grammar always; WASM / unit-test / critic / VLM-judge when available. Best-of-N search replaces guessing. |
 
 ---
@@ -48,7 +48,7 @@ flowchart LR
 ```
 
 - **Memory** — Namespaced corpora (user-facts, conversations, agent-traces, recipes, code, distilled-lessons). Distill-on-write.
-- **Fast** — Tiny worker gateway. Grammar-constrained ops (route, distill, act, judge). ~2000 tok/s batched. Swarmable.
+- **Fast** — Tiny worker gateway. Two scoring modes: **argmax** (route/judge: single forward pass, logprobs, no text generation) and **grammar** (act/distill: constrained JSON). ~2000 tok/s batched. Swarmable.
 - **Reason** — Main model + retrieval-hijack. The expensive step, fed clean.
 - **Verify** — Pyodide WASM, unit tests, critic, VLM-judge. `verify(candidate, kind)` / `bestof(candidates, kind)`.
 - **Kernel** — Orchestration library implementing the universal loop. Imported by each front-end.
@@ -122,7 +122,9 @@ edge/                  searxng · cloudflared · open-webui (configs)
 
 ## The Thesis
 
-**Spend abundance to make scarcity rare and well-fed.** Semantic recall (MiniLM) and the tiny-worker swarm (grammar-constrained, ~2000 tok/s batched) are nearly free on idle GPU. Deep reasoning (the main model) is the scarce, slow thing. So spend the cheap stuff lavishly to ensure the main model **rarely runs** and **never sees raw input**.
+**Structured decisions don't need text generation.** For route/judge/classify, the fast organ does a single forward pass and argmax over logprobs — no JSON to generate, no grammar to enforce, no parsing to fail. The model scores options, argmax picks the winner, calibrated probabilities come free. For decisions that need free-form output (tool calls, distillation), grammar-constrained generation handles those.
+
+**Spend abundance to make scarcity rare and well-fed.** Semantic recall (MiniLM) and the tiny-worker swarm (argmax scoring, ~2000 tok/s batched) are nearly free on idle GPU. Deep reasoning (the main model) is the scarce, slow thing. So spend the cheap stuff lavishly to ensure the main model **rarely runs** and **never sees raw input**.
 
 ---
 
