@@ -2,6 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Docker](https://img.shields.io/badge/Docker-ready-blue?logo=docker)](./docker-compose.yml)
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)]()
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)]()
 
 > **Structured decisions don't need text generation.**
@@ -9,6 +10,33 @@
 Sunshine is a **model-agnostic substrate** for running small local LLMs well. One small-but-capable main model + one tiny fast worker, wired so either swaps out without touching anything else. Code agents, home chat, image/video, real-time speech — on commodity or idle GPUs.
 
 **Default stack:** Qwen3.5-4B (main) + Qwen3.5-0.8B (worker), backend 1cat-vLLM (pluggable).
+
+## Why Sunshine
+
+The industry is converging on one pattern from four different directions. Sunshine is the only project that implements all of them natively.
+
+| Trend | What It Says | Sunshine Already Has It |
+|-------|-------------|------------------------|
+| **Jev** (TypeSafe AI) | "System One models" — don't generate text, score typed decisions in one forward pass | Fast organ: argmax over logprobs, calibrated probabilities, no JSON |
+| **Laya** (Convai Innovations) | Open-source 421M decision model, 32.8ms latency, beats Jev on benchmarks | Fast organ: same pattern, swappable backend |
+| **SemIf** | Read logits directly instead of generating JSON — 5.21x faster | Fast organ: logprobs → softmax → argmax, zero output tokens |
+| **Needle** (Cactus Compute) | "Tool calling is retrieval-and-assembly, not reasoning — throw away FFNs" | Fast organ: lightweight scoring, reason organ handles real reasoning |
+| **Gemma 4 E2B/E4B** | Edge models with native function calling, 2.3B effective params | Model-agnostic: swap in any backend, any model |
+| **Qwen3.5-4B** | 19.7M downloads, 262K context, tool calling, structured output | Default main model, proven on this architecture |
+
+The pattern: **80% of agent calls are short, structured, and routine. Route, classify, extract, judge.** You don't need a frontier model for those. You need a scoring engine that picks the right option in one pass.
+
+Sunshine's fast organ does exactly that. The reason organ handles the 20% that needs real thinking. The kernel orchestrates the loop. The memory and verify organs keep it honest.
+
+```
+                    What everyone else is building        What Sunshine already is
+                    ─────────────────────────────        ──────────────────────────
+                    "Prompt LLM, parse JSON"      →      Argmax scoring, no generation
+                    "Small-first routing"         →      Fast/Reason organ split
+                    "Structured output"           →      Logprobs + softmax + argmax
+                    "Verify don't trust"          →      Best-of-N + WASM + critic
+                    "Tiny models for agents"      →      Qwen3.5-0.8B worker, swappable
+```
 
 ## Table of Contents
 
@@ -60,15 +88,15 @@ flowchart LR
 
 | Feature | Description |
 |---|---|
-| **Argmax Scoring** | Single forward pass + argmax over logprobs for routing, judging, classifying — no text generation needed |
-| **Model-Agnostic Backend** | Swap models via config: vLLM, llamacpp, OpenAI-compatible. Default Qwen3.5-4B + 0.8B |
-| **5 Organ Architecture** | Memory, Fast, Reason, Verify, Kernel — each swappable independently |
+| **Argmax Scoring** | Single forward pass + logprobs → softmax → argmax. No text generation, no JSON parsing. Calibrated probabilities for free |
+| **Two Scoring Modes** | Argmax for route/judge/classify (fast path). Grammar-constrained JSON for act/distill (unbounded output) |
+| **Model-Agnostic Backend** | Swap models via config: vLLM, llamacpp, OpenAI-compatible. Default Qwen3.5-4B + 0.8B — or Gemma 4, SmolLM3, any SLM |
+| **5 Organ Architecture** | Memory · Fast · Reason · Verify · Kernel — each swappable independently |
 | **Distill-on-Write** | Worker distills raw inputs into clean, generic form at write time. Reasoners never see noise |
 | **Best-of-N Search** | Generate N candidates, verify and score each, pick the best. Replaces single-shot guessing |
-| **Grammar Constraints** | Constrained JSON output when argmax scoring isn't the right tool |
 | **Universal Loop** | Every product runs the same INGEST → ROUTE → RECALL → ACT → VERIFY → EMIT shape |
-| **Docker Compose** | Memory, Fast, Reason, Verify — each a container, all orchestrated |
 | **Semantic Recall** | MiniLM + RaBitQ namespaced corpora for cheap, fast retrieval |
+| **Docker Compose** | Memory, Fast, Reason, Verify — each a container, all orchestrated |
 
 ## Architecture
 
@@ -116,6 +144,19 @@ curl http://localhost:8094/health   # kernel
 curl http://localhost:8090/health   # memory
 curl http://localhost:8091/health   # fast
 ```
+
+## Argmax vs Grammar: When to Use Which
+
+The fast organ auto-selects the scoring method based on the operation:
+
+| Operation | Method | Why |
+|-----------|--------|-----|
+| **Route** (pick one option) | Argmax | Fixed option set, one forward pass, no generation |
+| **Judge** (true/false) | Argmax | Binary decision, logprobs over "true"/"false" tokens |
+| **Act** (tool call) | Grammar | Unbounded command string needs constrained generation |
+| **Distill** (summarize) | Grammar | Free-form text output needs generation |
+
+Override with `method=argmax` or `method=grammar` on any request.
 
 ## The Universal Loop
 
