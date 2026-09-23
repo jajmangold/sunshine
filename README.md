@@ -158,6 +158,34 @@ The fast organ auto-selects the scoring method based on the operation:
 
 Override with `method=argmax` or `method=grammar` on any request.
 
+## Evidence: The Ablation Ladder
+
+Sunshine ships with a 9-task eval suite and a systematic ablation ladder. Each rung must measurably lift the curve or it's cut.
+
+| Rung | What It Adds | Baseline → With Rung | Key Metric |
+|------|-------------|---------------------|------------|
+| **0** | Bare grammar tool-calls | 2/6 tests, 361s | Reliable format, weak behavior |
+| **1** | Loop detection | **2/6 → 5/6**, 361s → **24s** | Escapes infinite loops, regenerates |
+| **2** | Repo map (structural context) | 0/3 → **2/3** | 4B traces call-structure to find bugs |
+| **3** | Gated recall (lessons) | 0/3 → **3/3** | Injects un-derivable facts, fewer tokens |
+| **4** | Output shaper (structured edits) | Valid edits + apply-verify | Write operations succeed |
+| **5** | Verify / best-of-N | 50% → **100%** | N tries + cheap checker = reliable |
+
+**The thesis in one number:** "Verifying is cheaper than generating." N tries + a cheap checker converts UNRELIABLE → RELIABLE. Single attempt = 50% solve rate. Best-of-3 with verify = 100%.
+
+**Knowledge vs reasoning injection** (measured, not guessed):
+
+| Task Type | Best Channel | Result |
+|-----------|-------------|--------|
+| Facts (sha256-gated key) | System note | 0/3 → 3/3 |
+| Facts | `<think>` hijack | 0/3 (corrupted) |
+| Strategy (non-obvious approach) | System note | 0/3 → 3/3 |
+| Strategy | `<think>` hijack | 1/3 |
+
+System notes beat think-prefill for both facts and strategies in the grammar backend. Right mechanism, right architecture.
+
+See [`eval/results/ladder.md`](eval/results/ladder.md) for full ablation data.
+
 ## The Universal Loop
 
 Every product runs the same shape:
